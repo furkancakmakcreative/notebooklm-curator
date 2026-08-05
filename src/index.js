@@ -11,6 +11,8 @@
  * requires confirm:true, and nlm_audit is read-only by construction.
  */
 
+import os from 'node:os';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -26,16 +28,24 @@ import { DEFAULT_POLICY, audit, findDuplicates, guessCategory } from './policy.j
 const ok = (data) => ({
   content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
 });
-/** Never forward a stack trace (leaks local file paths) or a stray API key to the client. */
+
+/**
+ * Never forward a stack trace, a stray API key, or the local home directory
+ * (Node's ENOENT/EACCES messages embed absolute paths, which leak the local
+ * username) to an MCP client.
+ */
+function sanitizeError(msg) {
+  let s = String(msg).replace(/([?&]key=)[^&\s]+/gi, '$1REDACTED');
+  const home = os.homedir();
+  if (home) s = s.split(home).join('~');
+  return s;
+}
+
 const fail = (msg) => ({
   content: [
     {
       type: 'text',
-      text: JSON.stringify(
-        { error: String(msg).replace(/([?&]key=)[^&\s]+/gi, '$1REDACTED') },
-        null,
-        2,
-      ),
+      text: JSON.stringify({ error: sanitizeError(msg) }, null, 2),
     },
   ],
   isError: true,

@@ -34,7 +34,9 @@ export function profileDir(account = 'default') {
       ? path.join(process.env.APPDATA || os.homedir(), 'notebooklm-curator')
       : path.join(os.homedir(), '.local', 'share', 'notebooklm-curator'));
   const dir = path.join(base, 'accounts', account, 'chrome_profile');
-  fs.mkdirSync(dir, { recursive: true });
+  // 0o700: this directory ends up holding a live Google session cookie —
+  // keep it unreadable to other local users on shared/multi-user machines.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
