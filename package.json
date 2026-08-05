@@ -18,6 +18,9 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "patchright": "^1.49.0"
   },
+  "optionalDependencies": {
+    "playwright": "^1.49.0"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -154,7 +154,9 @@ still-disabled box and hangs. `ask()` in `src/notebooklm.js` waits for both,
 in order, before reading the last `.chat-message-pair`'s answer text.
 
 If you're extending this tool and NotebookLM's DOM changes again, that's the
-one thing worth re-verifying live before touching anything else.
+one thing worth re-verifying live before touching anything else. If a wait
+times out, `nlm_ask` sets `incomplete: true` on its response rather than
+silently returning stale or partial text as if it were final.
 
 ---
 
@@ -166,11 +168,38 @@ one thing worth re-verifying live before touching anything else.
   can't be told apart (`findDuplicates` reports these separately).
 - **The delete confirmation dialog** may or may not appear depending on
   rollout; the code handles both and verifies the source count afterward.
+  `removeSource` re-checks the target row's title immediately before acting
+  on it, but a full guarantee against the list reordering mid-click isn't
+  possible with index-based targeting alone.
+- **UI text matching is English/Turkish only.** Menu items, buttons, and the
+  category-guessing heuristics in `policy.js` match against those two
+  languages; a notebook in a third UI language may fail to categorize or to
+  find the "remove" menu item.
+- **Freshness dates only resolve for YouTube sources today.** Web pages and
+  PDFs always come back `unknown` — there's no per-page date extraction yet.
+- Fixed `waitForTimeout` calls are used in a few places instead of polling
+  for a DOM signal; on a slow connection they can under-wait, on a fast one
+  they add latency. `ask()` uses the more robust polling pattern — anything
+  ported from `removeSource`/`addSource` should follow that model instead.
 - If Google changes the UI, `src/notebooklm.js` is the only file that needs
   updating.
 - This is not an official integration. Consider using a separate Google
   account rather than your primary one — the `account` parameter supports
   multiple profiles.
+
+## Roadmap
+
+Ideas that didn't make v0.1, roughly in order of value:
+
+- Export an `nlm_audit` report to Markdown/CSV for offline review.
+- A batch-delete tool that takes a pre-approved list of `{title, occurrence}`
+  pairs (still gated by an explicit human-approved list, not autonomous).
+- Cross-notebook source search/duplicate detection (`findDuplicates` already
+  generalizes to this — it just isn't wired up across notebooks yet).
+- Date resolution for web sources via `Last-Modified` headers or
+  `article:published_time` / JSON-LD `datePublished` metadata.
+
+Contributions on any of these are welcome.
 
 ## License
 

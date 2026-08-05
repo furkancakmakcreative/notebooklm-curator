@@ -181,7 +181,14 @@ export async function removeSource(page, title, occurrence) {
   const idx = found.index;
   if (idx === null) return { removed: false, reason: 'source not found' };
 
-  const before = (await listSources(page)).length;
+  const beforeSources = await listSources(page);
+  const before = beforeSources.length;
+  // Re-check the target row's title right before acting on it — the list
+  // can reorder between the initial scan and this point (async metadata,
+  // lazy load), and index-based targeting alone could hit the wrong row.
+  if (beforeSources[idx]?.title !== title) {
+    return { removed: false, reason: 'source list changed before the delete could run; retry' };
+  }
   const row = page.locator(SEL.sourceItem).nth(idx);
 
   await row.hover();
@@ -264,7 +271,7 @@ export async function addSource(page, url) {
 }
 
 /**
- * Ask the notebook a question; returns the settled answer text.
+ * Ask the notebook a question; returns {text, incomplete}.
  *
  * The chat panel renders OUTSIDE <main> — polling main's innerText for
  * "stability" (a natural first instinct) never changes and falsely
@@ -273,6 +280,12 @@ export async function addSource(page, url) {
  * an "is-changing" class while streaming) detaching from the DOM. The
  * query textarea's disabled state re-enables slightly after that, so
  * both are awaited before reading the last answer. Verified 2026-08-05.
+ *
+ * If NotebookLM's DOM ever changes and these selectors stop matching,
+ * the waits below time out silently (by design, so one broken selector
+ * doesn't hang forever) — `incomplete: true` on the return value is the
+ * caller-visible signal that the text may be stale or truncated rather
+ * than a confirmed final answer.
  */
 export async function ask(page, question, opts = {}) {
   const timeoutMs = opts.timeoutMs || 180000;
@@ -282,14 +295,15 @@ export async function ask(page, question, opts = {}) {
   await page.keyboard.press('Enter');
 
   await page.waitForTimeout(1500);
-  await page
+  const thinkingDetached = await page
     .locator('.thinking-message')
     .first()
     .waitFor({ state: 'detached', timeout: timeoutMs })
-    .catch(() => {});
+    .then(() => true)
+    .catch(() => false);
   // The query box re-enables slightly after the thinking indicator detaches.
   await box.locator('xpath=.').waitFor({ state: 'attached' }).catch(() => {});
-  await page
+  const boxReenabled = await page
     .waitForFunction(
       () => {
         const el = document.querySelector('textarea[aria-label="Sorgu kutusu"], textarea[aria-label="Query box"], [contenteditable="true"]');
@@ -297,9 +311,10 @@ export async function ask(page, question, opts = {}) {
       },
       { timeout: 15000 },
     )
-    .catch(() => {});
+    .then(() => true)
+    .catch(() => false);
 
-  return page.evaluate(() => {
+  const text = await page.evaluate(() => {
     const pairs = document.querySelectorAll('.chat-message-pair');
     const last = pairs[pairs.length - 1];
     if (!last) return '';
@@ -307,4 +322,6 @@ export async function ask(page, question, opts = {}) {
       || last.querySelector('.to-user-message-inner-content');
     return (el?.innerText || '').trim();
   });
+
+  return { text, incomplete: !thinkingDetached || !boxReenabled || !text };
 }

@@ -20,15 +20,26 @@ function requireKey(key) {
   return k;
 }
 
+/** Strip the API key out of anything that might end up in an error string. */
+function redactKey(s) {
+  return String(s).replace(/([?&]key=)[^&\s]+/gi, '$1REDACTED');
+}
+
 async function call(path, params, key) {
   const url = new URL(`${BASE}/${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set('key', requireKey(key));
 
-  const res = await fetch(url);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    // Some runtimes embed the full request URL (key included) in fetch errors.
+    throw new Error(`YouTube API request failed: ${redactKey(err?.message || err)}`);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`YouTube API ${res.status}: ${body.slice(0, 300)}`);
+    throw new Error(`YouTube API ${res.status}: ${redactKey(body.slice(0, 300))}`);
   }
   return res.json();
 }
