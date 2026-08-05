@@ -27,6 +27,36 @@ async function loadChromium() {
   return _chromium;
 }
 
+/**
+ * This tool intentionally launches real Google Chrome (channel: 'chrome'),
+ * not a downloaded/bundled Chromium build — patchright's anti-detection
+ * patches are far more convincing against NotebookLM's bot checks when the
+ * automation runs inside an actual Chrome install. Trading that away for a
+ * bundled-Chromium default would make the tool less reliable at the one
+ * thing it exists to do, so instead we fail fast with a clear message when
+ * Chrome is missing rather than silently degrading detection resistance.
+ */
+const CHROME_PATHS = {
+  win32: [
+    `${process.env['PROGRAMFILES']}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env['PROGRAMFILES(X86)']}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env['LOCALAPPDATA']}\\Google\\Chrome\\Application\\chrome.exe`,
+  ],
+  darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+};
+
+/** Best-effort check so a missing Chrome install fails with a clear message. */
+function assertChromeInstalled() {
+  const candidates = CHROME_PATHS[process.platform];
+  if (!candidates) return; // unlisted platform (e.g. Linux) — let Playwright's own error surface
+  if (candidates.some((p) => p && fs.existsSync(p))) return;
+  throw new Error(
+    'Google Chrome was not found. This tool automates your real Chrome install ' +
+      '(not a downloaded Chromium) so it stays undetected by NotebookLM — install ' +
+      'Chrome from https://www.google.com/chrome/ and try again.',
+  );
+}
+
 export function profileDir(account = 'default') {
   const base =
     process.env.NLM_DATA_DIR ||
@@ -48,6 +78,7 @@ export function profileDir(account = 'default') {
 export async function getContext({ headless = true, account = 'default' } = {}) {
   if (_ctx && !_ctx.__closed) return _ctx;
 
+  if (!process.env.NLM_BROWSER_CHANNEL) assertChromeInstalled();
   const chromium = await loadChromium();
   _ctx = await chromium.launchPersistentContext(profileDir(account), {
     headless,

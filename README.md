@@ -28,6 +28,19 @@ Selectors were verified live against notebooklm.google.com on 2026-07-29.
 
 ---
 
+## Requirements
+
+- **Node.js 20+**
+- **Google Chrome installed** (Windows or macOS — the standard desktop app
+  from [google.com/chrome](https://www.google.com/chrome/)). This tool
+  automates your real Chrome install on purpose, not a downloaded Chromium
+  build: patchright's anti-detection patches are far more effective against
+  NotebookLM's bot checks when running inside an actual Chrome, so we don't
+  trade that away for a "works anywhere" default. If Chrome isn't found,
+  `nlm_auth`/any tool call fails immediately with a clear message instead of
+  a cryptic browser-launch error.
+- Tested on Windows and macOS. Linux is not a current target.
+
 ## Setup
 
 ```bash
@@ -120,6 +133,11 @@ threshold with the `categories` parameter:
 
 Status values: `fresh` → `aging` (75% of shelf life burned) → `stale`.
 Sources whose date can't be resolved are `unknown` — a date is never guessed.
+
+By default the response only gives you counts for `fresh`/`pinned` sources,
+not their full per-item detail — you rarely need to see the sources that
+need no action. Pass `includeFresh: true` to get everything, e.g. for a
+full-library export.
 
 ---
 

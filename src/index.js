@@ -25,8 +25,10 @@ import * as nlm from './notebooklm.js';
 import * as yt from './youtube.js';
 import { DEFAULT_POLICY, audit, findDuplicates, guessCategory } from './policy.js';
 
+// Compact JSON: this is consumed by an LLM, not eyeballed in a terminal —
+// dropping the pretty-print indentation saves real tokens on large payloads.
 const ok = (data) => ({
-  content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+  content: [{ type: 'text', text: JSON.stringify(data) }],
 });
 
 /**
@@ -45,7 +47,7 @@ const fail = (msg) => ({
   content: [
     {
       type: 'text',
-      text: JSON.stringify({ error: sanitizeError(msg) }, null, 2),
+      text: JSON.stringify({ error: sanitizeError(msg) }),
     },
   ],
   isError: true,
@@ -143,7 +145,7 @@ const TOOLS = [
   {
     name: 'nlm_audit',
     description:
-      'Read-only freshness audit of a notebook: resolves YouTube publish dates, applies category shelf life, and returns stale / aging / unknown buckets plus exact-title duplicates. Deletes nothing.',
+      'Read-only freshness audit of a notebook: resolves YouTube publish dates, applies category shelf life, and returns stale / aging / unknown buckets plus exact-title duplicates. Deletes nothing. By default the response omits per-item detail for fresh/pinned sources (only their counts) to keep the payload small — pass includeFresh:true to get the full per-source list instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -163,6 +165,11 @@ const TOOLS = [
           type: 'object',
           description:
             'Previously resolved {"title":"videoId"} map. When provided, no search is spent and quota use drops to near zero.',
+        },
+        includeFresh: {
+          type: 'boolean',
+          description:
+            'Include the full per-source detail for fresh/pinned sources too (large payload). Default false: only their counts are returned, since they need no action.',
         },
       },
       required: ['notebookId'],
@@ -281,6 +288,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           };
         });
 
+        // `all` repeats every source (fresh/pinned ones included) already
+        // covered by `counts` and the stale/aging/unknown buckets below —
+        // it's opt-in only, so a routine audit doesn't ship a full-library
+        // dump the caller almost never needs.
+        const { all, ...auditSummary } = audit(enriched, policy);
+
         return ok({
           notebookId: a.notebookId,
           policy: Object.fromEntries(
@@ -288,7 +301,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ),
           quota: { searchesSpent, quotaUnitsApprox },
           duplicates: findDuplicates(sources),
-          ...audit(enriched, policy),
+          ...auditSummary,
+          ...(a.includeFresh ? { all } : {}),
         });
       }
 
