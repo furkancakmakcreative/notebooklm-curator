@@ -1,0 +1,35 @@
+{
+  "name": "notebooklm-curator",
+  "version": "0.1.0",
+  "description": "MCP server for Gemini Notebook (NotebookLM): list, audit and remove sources by shelf life.",
+  "type": "module",
+  "bin": {
+    "notebooklm-curator": "src/index.js"
+  },
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "postinstall": "patchright install chromium || playwright install chromium || true"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "patchright": "^1.49.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_GITHUB_USERNAME/notebooklm-curator.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "notebooklm",
+    "gemini-notebook",
+    "claude",
+    "playwright",
+    "browser-automation"
+  ]
+}

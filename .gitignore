@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+
+# scratch / debug output from local development
+*.png
+*.html
+!README*.html
+test-*.mjs
+diag-*.mjs
+diag-*.txt
+*-final-sources.json
