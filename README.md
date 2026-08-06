@@ -59,7 +59,7 @@ Selectors were verified live against notebooklm.google.com on 2026-07-29.
 ## Setup
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/notebooklm-curator.git
+git clone https://github.com/furkancakmakcreative/notebooklm-curator.git
 cd notebooklm-curator
 npm install
 ```
