@@ -11,8 +11,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node --env-file=.env src/index.js",
-    "postinstall": "patchright install chromium || playwright install chromium || true"
+    "start": "node --env-file=.env src/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

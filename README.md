@@ -2,6 +2,13 @@
 
 An MCP server that **audits and prunes** Gemini Notebook (formerly NotebookLM) libraries.
 
+> **Not an official Google or Anthropic integration.** This drives NotebookLM
+> through your own signed-in Chrome profile — it is not affiliated with,
+> endorsed by, or connected to Google in any way. Consider using a separate
+> Google account rather than your primary one; the `account` parameter
+> supports multiple profiles. See [Known limitations](#known-limitations) for
+> the full picture before pointing it at anything you care about.
+
 Off-the-shelf NotebookLM MCPs give you `add_source` and `ask_question`. None of them give you these three:
 
 | Tool | What it does | In other NotebookLM MCPs |
@@ -10,7 +17,11 @@ Off-the-shelf NotebookLM MCPs give you `add_source` and `ask_question`. None of 
 | `nlm_remove_source` | Deletes a source | ✗ missing |
 | `nlm_audit` | Flags stale sources by shelf life | ✗ missing |
 
-Also included: `nlm_auth`, `nlm_list_notebooks`, `nlm_create_notebook`, `nlm_add_source`, `nlm_ask`.
+Also included: `nlm_auth`, `nlm_list_notebooks`, `nlm_create_notebook`, `nlm_rename_notebook`, `nlm_add_source`, `nlm_ask`.
+
+![nlm_audit output inside Claude Desktop](docs/demo.png)
+
+*(Titles above are representative examples; the counts reflect a real run against a 56-source notebook.)*
 
 ---
 
@@ -38,7 +49,11 @@ Selectors were verified live against notebooklm.google.com on 2026-07-29.
   NotebookLM's bot checks when running inside an actual Chrome, so we don't
   trade that away for a "works anywhere" default. If Chrome isn't found,
   `nlm_auth`/any tool call fails immediately with a clear message instead of
-  a cryptic browser-launch error.
+  a cryptic browser-launch error. Because real Chrome is used by default,
+  `npm install` does **not** download a separate Chromium build — nothing
+  extra to fetch, nothing extra on disk. (If you deliberately opt into
+  `NLM_BROWSER_CHANNEL=chromium`, run `npx patchright install chromium`
+  once yourself first.)
 - Tested on Windows and macOS. Linux is not a current target.
 
 ## Setup
@@ -176,6 +191,12 @@ one thing worth re-verifying live before touching anything else. If a wait
 times out, `nlm_ask` sets `incomplete: true` on its response rather than
 silently returning stale or partial text as if it were final.
 
+`nlm_ask` also enforces a minimum gap (default 4s, `NLM_MIN_ASK_INTERVAL_MS`)
+between question submissions. Firing questions back-to-back is a pattern real
+usage never produces, and it's the most plausible trigger for NotebookLM
+occasionally refusing to answer ("Şu anda yanıt vermekte zorlanıyorum") —
+this is cheap insurance against that, not a confirmed root cause.
+
 ---
 
 ## Known limitations
@@ -201,9 +222,14 @@ silently returning stale or partial text as if it were final.
   ported from `removeSource`/`addSource` should follow that model instead.
 - If Google changes the UI, `src/notebooklm.js` is the only file that needs
   updating.
-- This is not an official integration. Consider using a separate Google
-  account rather than your primary one — the `account` parameter supports
-  multiple profiles.
+- `renameNotebook` and `addSource` report success once the DOM action is
+  triggered, without re-reading the page to confirm it actually applied
+  (unlike `removeSource`, which re-verifies). On a slow/flaky page a rename
+  or add could silently no-op.
+- The Chrome profile directory is created with `mode: 0o700`, which is a
+  no-op on Windows NTFS (no ACL is set) — on Windows the directory's
+  permissions are whatever the OS default is for your user folder, not
+  actually restricted to your account alone.
 
 ## Roadmap
 

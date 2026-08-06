@@ -7,6 +7,18 @@
  * DOM knowledge out of the tool layer.
  */
 
+// Serializes calls that share a `page` (e.g. two overlapping nlm_ask calls)
+// so they can't interleave on the same textarea/DOM state, and so the
+// MIN_ASK_INTERVAL_MS throttle below can't be read-then-written by two
+// callers at once.
+const pageLocks = new WeakMap();
+function withPageLock(page, fn) {
+  const prev = pageLocks.get(page) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  pageLocks.set(page, run.catch(() => {}));
+  return run;
+}
+
 export const SEL = {
   // Notebook grid (home page)
   notebookCard: 'a[href*="/notebook/"]',
@@ -287,8 +299,25 @@ export async function addSource(page, url) {
  * caller-visible signal that the text may be stale or truncated rather
  * than a confirmed final answer.
  */
+// Firing questions back-to-back is the one pattern real NotebookLM usage
+// never produces, and it's a plausible trigger for "Şu anda yanıt vermekte
+// zorlanıyorum" (the tool briefly refusing to answer). A minimum gap between
+// question submissions is cheap insurance against that, tunable per install.
+const MIN_ASK_INTERVAL_MS = Number(process.env.NLM_MIN_ASK_INTERVAL_MS) || 4000;
+let lastAskSubmittedAt = 0;
+
 export async function ask(page, question, opts = {}) {
+  return withPageLock(page, () => askOnce(page, question, opts));
+}
+
+async function askOnce(page, question, opts) {
   const timeoutMs = opts.timeoutMs || 180000;
+  const sinceLastAsk = Date.now() - lastAskSubmittedAt;
+  if (sinceLastAsk < MIN_ASK_INTERVAL_MS) {
+    await new Promise((resolve) => setTimeout(resolve, MIN_ASK_INTERVAL_MS - sinceLastAsk));
+  }
+  lastAskSubmittedAt = Date.now();
+
   const box = page.locator('textarea, [contenteditable="true"]').last();
   await box.click();
   await box.fill(question);

@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-let _ctx = null;
+const _contexts = new Map(); // account -> { ctx } | { pending }
 let _chromium = null;
 
 /**
@@ -57,7 +57,17 @@ function assertChromeInstalled() {
   );
 }
 
+/** Profile slugs become directory names — keep them to a safe, flat charset. */
+function assertSafeAccount(account) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(account)) {
+    throw new Error(
+      `invalid account name "${account}": only letters, digits, "-" and "_" are allowed`,
+    );
+  }
+}
+
 export function profileDir(account = 'default') {
+  assertSafeAccount(account);
   const base =
     process.env.NLM_DATA_DIR ||
     (process.platform === 'win32'
@@ -76,23 +86,34 @@ export function profileDir(account = 'default') {
  * @param {string}  opts.account   profile slug, for multiple Google accounts
  */
 export async function getContext({ headless = true, account = 'default' } = {}) {
-  if (_ctx && !_ctx.__closed) return _ctx;
+  const existing = _contexts.get(account);
+  if (existing?.pending) return existing.pending;
+  if (existing?.ctx && !existing.ctx.__closed) return existing.ctx;
 
-  if (!process.env.NLM_BROWSER_CHANNEL) assertChromeInstalled();
-  const chromium = await loadChromium();
-  _ctx = await chromium.launchPersistentContext(profileDir(account), {
-    headless,
-    channel: process.env.NLM_BROWSER_CHANNEL || 'chrome',
-    viewport: { width: 1440, height: 900 },
-    locale: 'en-US',
-    args: ['--disable-blink-features=AutomationControlled'],
-  });
-  _ctx.__closed = false;
-  _ctx.on('close', () => {
-    _ctx.__closed = true;
-    _ctx = null;
-  });
-  return _ctx;
+  // Two overlapping tool calls at cold start must not both launch a Chrome
+  // process against the same profile dir — stash the in-flight promise so a
+  // concurrent caller awaits the same launch instead of racing it.
+  const pending = (async () => {
+    if (!process.env.NLM_BROWSER_CHANNEL) assertChromeInstalled();
+    const chromium = await loadChromium();
+    const ctx = await chromium.launchPersistentContext(profileDir(account), {
+      headless,
+      channel: process.env.NLM_BROWSER_CHANNEL || 'chrome',
+      viewport: { width: 1440, height: 900 },
+      locale: 'en-US',
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+    ctx.__closed = false;
+    ctx.on('close', () => {
+      ctx.__closed = true;
+      _contexts.delete(account);
+    });
+    _contexts.set(account, { ctx });
+    return ctx;
+  })();
+
+  _contexts.set(account, { pending });
+  return pending;
 }
 
 export async function getPage(opts) {
@@ -102,8 +123,10 @@ export async function getPage(opts) {
 }
 
 export async function closeBrowser() {
-  if (_ctx && !_ctx.__closed) await _ctx.close().catch(() => {});
-  _ctx = null;
+  for (const { ctx } of _contexts.values()) {
+    if (ctx && !ctx.__closed) await ctx.close().catch(() => {});
+  }
+  _contexts.clear();
 }
 
 /** True when the persistent profile still holds a valid Google session. */

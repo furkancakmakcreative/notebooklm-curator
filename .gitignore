@@ -4,6 +4,7 @@ node_modules/
 
 # scratch / debug output from local development
 *.png
+!docs/*.png
 *.html
 !README*.html
 test-*.mjs
