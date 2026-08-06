@@ -94,22 +94,31 @@ export async function getContext({ headless = true, account = 'default' } = {}) 
   // process against the same profile dir — stash the in-flight promise so a
   // concurrent caller awaits the same launch instead of racing it.
   const pending = (async () => {
-    if (!process.env.NLM_BROWSER_CHANNEL) assertChromeInstalled();
-    const chromium = await loadChromium();
-    const ctx = await chromium.launchPersistentContext(profileDir(account), {
-      headless,
-      channel: process.env.NLM_BROWSER_CHANNEL || 'chrome',
-      viewport: { width: 1440, height: 900 },
-      locale: 'en-US',
-      args: ['--disable-blink-features=AutomationControlled'],
-    });
-    ctx.__closed = false;
-    ctx.on('close', () => {
-      ctx.__closed = true;
+    try {
+      if (!process.env.NLM_BROWSER_CHANNEL) assertChromeInstalled();
+      const chromium = await loadChromium();
+      const ctx = await chromium.launchPersistentContext(profileDir(account), {
+        headless,
+        channel: process.env.NLM_BROWSER_CHANNEL || 'chrome',
+        viewport: { width: 1440, height: 900 },
+        locale: 'en-US',
+        args: ['--disable-blink-features=AutomationControlled'],
+      });
+      ctx.__closed = false;
+      ctx.on('close', () => {
+        ctx.__closed = true;
+        _contexts.delete(account);
+      });
+      _contexts.set(account, { ctx });
+      return ctx;
+    } catch (err) {
+      // A transient launch failure (profile lock contention, brief OOM, ...)
+      // must not permanently poison this account — clear the entry so the
+      // next call retries the launch instead of forever awaiting this
+      // already-rejected promise.
       _contexts.delete(account);
-    });
-    _contexts.set(account, { ctx });
-    return ctx;
+      throw err;
+    }
   })();
 
   _contexts.set(account, { pending });

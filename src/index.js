@@ -53,7 +53,7 @@ function sanitizeError(msg) {
 function validateArgs(tool, a) {
   const { properties = {}, required = [] } = tool.inputSchema;
   for (const key of required) {
-    if (a[key] === undefined || a[key] === null || a[key] === '') {
+    if (a[key] === undefined || a[key] === null) {
       throw new Error(`missing required argument: ${key}`);
     }
   }
@@ -67,6 +67,12 @@ function validateArgs(tool, a) {
     }
     if (schema.type === 'number' && typeof a[key] !== 'number') {
       throw new Error(`argument "${key}" must be a number`);
+    }
+    if (
+      schema.type === 'object' &&
+      (typeof a[key] !== 'object' || a[key] === null || Array.isArray(a[key]))
+    ) {
+      throw new Error(`argument "${key}" must be an object`);
     }
   }
 }
