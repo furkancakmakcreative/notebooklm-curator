@@ -57,6 +57,10 @@ test('exposes all watch tools and preserves the existing tools', () => {
     'ignored',
     'uncertain',
   ]);
+  assert.deepEqual(tool('nlm_approve_candidates').inputSchema.properties.uncertainAction.enum, [
+    'mark-added',
+    'retry-add',
+  ]);
   assert.equal('ids' in tool('nlm_approve_candidates').inputSchema.properties, false);
 });
 
@@ -107,6 +111,10 @@ test('validates enums, arrays, integer fields, and numeric bounds', () => {
     () => validateArgs(watch, { source: '@creator', notebookId: 'notebook', reserveSlots: -1 }),
     /at least 0/,
   );
+  assert.throws(
+    () => validateArgs(watch, { source: '@creator', notebookId: 'notebook', confirmAuto: 'yes' }),
+    /must be a boolean/,
+  );
 
   const approve = tool('nlm_approve_candidates');
   assert.doesNotThrow(() =>
@@ -123,6 +131,21 @@ test('validates enums, arrays, integer fields, and numeric bounds', () => {
   assert.throws(
     () => validateArgs(approve, { ids: ['candidate-1'], confirm: true }),
     /missing required argument: candidateIds/,
+  );
+  assert.doesNotThrow(() =>
+    validateArgs(approve, {
+      candidateIds: ['candidate-1'],
+      confirm: true,
+      uncertainAction: 'retry-add',
+    }),
+  );
+  assert.throws(
+    () => validateArgs(approve, {
+      candidateIds: ['candidate-1'],
+      confirm: true,
+      uncertainAction: 'guess',
+    }),
+    /must be one of/,
   );
 });
 

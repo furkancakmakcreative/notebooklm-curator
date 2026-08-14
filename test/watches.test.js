@@ -27,7 +27,7 @@ function item(videoId, publishedAt, extra = {}) {
   };
 }
 
-async function harness({ now = Date.parse('2026-08-14T00:00:00.000Z'), discover, sourceCounts = {}, addSource, addResult, confirmAddResult = true, hasSource, containsSource } = {}) {
+async function harness({ now = Date.parse('2026-08-14T00:00:00.000Z'), discover, sourceCounts = {}, getSourceCount, addSource, addResult, confirmAddResult = true } = {}) {
   const baseDir = await fs.mkdtemp(`${os.tmpdir()}\\nlm-watches-test-`);
   let clock = now;
   let nextId = 0;
@@ -52,6 +52,7 @@ async function harness({ now = Date.parse('2026-08-14T00:00:00.000Z'), discover,
   };
   const notebooklm = {
     async getSourceCount({ notebookId }) {
+      if (getSourceCount) return getSourceCount({ notebookId, counts });
       return counts.get(notebookId) || 0;
     },
     async addSource({ notebookId, url }) {
@@ -59,8 +60,6 @@ async function harness({ now = Date.parse('2026-08-14T00:00:00.000Z'), discover,
       counts.set(notebookId, (counts.get(notebookId) || 0) + 1);
       return addResult === undefined && confirmAddResult ? { added: true } : addResult;
     },
-    ...(hasSource ? { async hasSource(input) { return hasSource(input); } } : {}),
-    ...(containsSource ? { async containsSource(input) { return containsSource(input); } } : {}),
   };
   return {
     baseDir,
@@ -158,7 +157,11 @@ test('report, review, and auto modes persist the right candidate behavior and ag
   });
   const report = await addWatch({ source: 'UCreport', notebookId: 'report', mode: 'report' }, h.deps);
   const review = await addWatch({ source: 'UCreview', notebookId: 'review', mode: 'review' }, h.deps);
-  const auto = await addWatch({ source: 'UCauto', notebookId: 'auto', mode: 'auto' }, h.deps);
+  await assert.rejects(
+    addWatch({ source: 'UCauto-unconfirmed', notebookId: 'auto', mode: 'auto' }, h.deps),
+    /confirmAuto:true/,
+  );
+  const auto = await addWatch({ source: 'UCauto', notebookId: 'auto', mode: 'auto', confirmAuto: true }, h.deps);
   const result = await syncWatches({ force: true }, h.deps);
   assert.equal(result.added, 0);
   assert.equal(result.ageGated, 1);
@@ -193,9 +196,9 @@ test('auto mode stops at configurable capacity and retries failures without bloc
       };
     },
   });
-  const full = await addWatch({ source: 'UCfull', notebookId: 'full', mode: 'auto', sourceLimit: 2, reserveSlots: 1 }, h.deps);
-  const flaky = await addWatch({ source: 'UCflaky', notebookId: 'flaky', mode: 'auto' }, h.deps);
-  const broken = await addWatch({ source: 'UCbroken', notebookId: 'broken', mode: 'auto' }, h.deps);
+  const full = await addWatch({ source: 'UCfull', notebookId: 'full', mode: 'auto', confirmAuto: true, sourceLimit: 2, reserveSlots: 1 }, h.deps);
+  const flaky = await addWatch({ source: 'UCflaky', notebookId: 'flaky', mode: 'auto', confirmAuto: true }, h.deps);
+  const broken = await addWatch({ source: 'UCbroken', notebookId: 'broken', mode: 'auto', confirmAuto: true }, h.deps);
   const first = await syncWatches({ force: true }, h.deps);
   assert.equal(first.capacityStops.length, 1);
   assert.equal(first.retries, 1);
@@ -228,7 +231,11 @@ test('approval requires confirmation, ignores age, respects capacity, and manage
   await manageWatches({ action: 'pause', watchId: created.watch.id }, h.deps);
   assert.equal((await listWatches({ watchId: created.watch.id }, h.deps)).watches[0].enabled, false);
   await manageWatches({ action: 'resume', watchId: created.watch.id }, h.deps);
-  await manageWatches({ action: 'update', watchId: created.watch.id, mode: 'auto', sourceLimit: 4, reserveSlots: 1, notebookId: 'n2' }, h.deps);
+  await assert.rejects(
+    manageWatches({ action: 'update', watchId: created.watch.id, mode: 'auto' }, h.deps),
+    /confirmAuto:true/,
+  );
+  await manageWatches({ action: 'update', watchId: created.watch.id, mode: 'auto', confirmAuto: true, sourceLimit: 4, reserveSlots: 1, notebookId: 'n2' }, h.deps);
   const updated = (await listWatches({ watchId: created.watch.id }, h.deps)).watches[0];
   assert.equal(updated.mode, 'auto');
   assert.equal(updated.notebookId, 'n2');
@@ -251,7 +258,7 @@ test('overlapping syncs claim candidates atomically and expired claims become un
       await releasePromise;
     },
   });
-  const created = await addWatch({ source: 'UClock', notebookId: 'n1', mode: 'auto' }, h.deps);
+  const created = await addWatch({ source: 'UClock', notebookId: 'n1', mode: 'auto', confirmAuto: true }, h.deps);
   const first = syncWatches({ watchId: created.watch.id, force: true }, h.deps);
   await enteredPromise;
   const second = syncWatches({ watchId: created.watch.id, force: true }, h.deps);
@@ -323,8 +330,8 @@ test('notebook-level claims serialize concurrent watches and suppress duplicate 
       await releasePromise;
     },
   });
-  const first = await addWatch({ source: 'UCone', notebookId: 'shared', mode: 'auto', minAutoAddAgeHours: 0, sourceLimit: 1, reserveSlots: 0 }, h.deps);
-  const second = await addWatch({ source: 'UCtwo', notebookId: 'shared', mode: 'auto', minAutoAddAgeHours: 0, sourceLimit: 1, reserveSlots: 0 }, h.deps);
+  const first = await addWatch({ source: 'UCone', notebookId: 'shared', mode: 'auto', confirmAuto: true, minAutoAddAgeHours: 0, sourceLimit: 1, reserveSlots: 0 }, h.deps);
+  const second = await addWatch({ source: 'UCtwo', notebookId: 'shared', mode: 'auto', confirmAuto: true, minAutoAddAgeHours: 0, sourceLimit: 1, reserveSlots: 0 }, h.deps);
   const runOne = syncWatches({ watchId: first.watch.id, force: true }, h.deps);
   await enteredPromise;
   const runTwo = syncWatches({ watchId: second.watch.id, force: true }, h.deps);
@@ -335,7 +342,7 @@ test('notebook-level claims serialize concurrent watches and suppress duplicate 
   assert.equal(adds, 1, 'a one-slot notebook must not receive concurrent additions');
   assert.equal(h.counts.get('shared'), 1);
 
-  const duplicate = await addWatch({ source: 'UCduplicate', notebookId: 'shared', mode: 'auto', minAutoAddAgeHours: 0, initialItems: 1 }, h.deps);
+  const duplicate = await addWatch({ source: 'UCduplicate', notebookId: 'shared', mode: 'auto', confirmAuto: true, minAutoAddAgeHours: 0, initialItems: 1 }, h.deps);
   await updateState('default', (state) => {
     const candidate = Object.values(state.candidates).find((entry) => entry.watchId === duplicate.watch.id);
     candidate.sourceKey = 'youtube:same';
@@ -347,10 +354,9 @@ test('notebook-level claims serialize concurrent watches and suppress duplicate 
   assert.equal((await listCandidates({ watchId: duplicate.watch.id }, h.deps)).candidates.find((candidate) => candidate.id === duplicateId).status, 'ignored');
 });
 
-test('uncertain approval reconciles before retrying and cannot add without reconciliation', async () => {
+test('uncertain approval requires an explicit retry-add or mark-added resolution', async () => {
   let addCalls = 0;
   const h = await harness({
-    hasSource: async () => false,
     addSource: async () => { addCalls++; },
     discover: async () => ({ newestVideoId: 'uncertain', items: [item('uncertain', '2026-08-01T00:00:00Z')] }),
   });
@@ -362,29 +368,50 @@ test('uncertain approval reconciles before retrying and cannot add without recon
     candidate.status = 'uncertain';
     candidate.lastError = 'add claim expired; explicit approval required to reconcile';
   }, { baseDir: h.baseDir, now: h.deps.now });
-  const approved = await approveCandidates({ candidateIds: [candidateId], confirm: true }, h.deps);
+  const blocked = await approveCandidates({ candidateIds: [candidateId], confirm: true }, h.deps);
+  assert.equal(blocked.approved.length, 0);
+  assert.match(blocked.skipped[0].reason, /uncertainAction/);
+  assert.equal(addCalls, 0);
+  assert.equal((await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].status, 'uncertain');
+
+  const approved = await approveCandidates({
+    candidateIds: [candidateId],
+    confirm: true,
+    uncertainAction: 'retry-add',
+  }, h.deps);
   assert.deepEqual(approved.approved, [candidateId]);
+  assert.deepEqual(approved.resolvedUncertain, [{ candidateId, action: 'retry-add' }]);
   assert.equal(addCalls, 1);
 
-  const noReconcile = await harness({ discover: async () => ({ newestVideoId: 'x', items: [item('x', '2026-08-01T00:00:00Z')] }) });
-  const noReconcileWatch = await addWatch({ source: 'UCnoreconcile', notebookId: 'n2', mode: 'review' }, noReconcile.deps);
-  await syncWatches({ watchId: noReconcileWatch.watch.id, force: true }, noReconcile.deps);
-  const noReconcileId = (await listCandidates({ watchId: noReconcileWatch.watch.id }, noReconcile.deps)).candidates[0].id;
-  await updateState('default', (state) => { state.candidates[noReconcileId].status = 'uncertain'; }, { baseDir: noReconcile.baseDir, now: noReconcile.deps.now });
-  const blocked = await approveCandidates({ candidateIds: [noReconcileId], confirm: true }, noReconcile.deps);
-  assert.equal(blocked.approved.length, 0);
-  assert.match(blocked.errors[0].error, /reconcile/);
-  assert.equal((await listCandidates({ watchId: noReconcileWatch.watch.id }, noReconcile.deps)).candidates[0].status, 'uncertain');
+  let markAddCalls = 0;
+  const mark = await harness({
+    addSource: async () => { markAddCalls++; },
+    discover: async () => ({ newestVideoId: 'existing', items: [item('existing', '2026-08-01T00:00:00Z')] }),
+  });
+  const markWatch = await addWatch({ source: 'UCexisting', notebookId: 'n2' }, mark.deps);
+  await syncWatches({ watchId: markWatch.watch.id, force: true }, mark.deps);
+  const markId = (await listCandidates({ watchId: markWatch.watch.id }, mark.deps)).candidates[0].id;
+  await updateState('default', (state) => { state.candidates[markId].status = 'uncertain'; }, { baseDir: mark.baseDir, now: mark.deps.now });
+  const marked = await approveCandidates({
+    candidateIds: [markId],
+    confirm: true,
+    uncertainAction: 'mark-added',
+  }, mark.deps);
+  assert.deepEqual(marked.approved, [markId]);
+  assert.deepEqual(marked.resolvedUncertain, [{ candidateId: markId, action: 'mark-added' }]);
+  assert.equal(markAddCalls, 0, 'mark-added never calls NotebookLM add');
+  const markedCandidate = (await listCandidates({ watchId: markWatch.watch.id }, mark.deps)).candidates[0];
+  assert.equal(markedCandidate.status, 'added');
+  assert.equal(markedCandidate.resolution, 'user-confirmed-existing');
 });
 
-test('approval reconciles a claim that expires during the approval call', async () => {
+test('a claim that expires during approval still requires explicit uncertain resolution', async () => {
   const h = await harness({
     discover: async () => ({
       newestVideoId: 'expired-during-approval',
       items: [item('expired-during-approval', '2026-08-01T00:00:00Z')],
     }),
   });
-  h.deps.notebooklm.hasSource = async () => true;
   const created = await addWatch({ source: 'UCexpired-approval', notebookId: 'n1' }, h.deps);
   await syncWatches({ watchId: created.watch.id, force: true }, h.deps);
   const candidate = (await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0];
@@ -396,10 +423,80 @@ test('approval reconciles a claim that expires during the approval call', async 
     });
   }, { baseDir: h.baseDir, now: h.deps.now });
 
-  const result = await approveCandidates({ candidateIds: [candidate.id], confirm: true }, h.deps);
+  const blocked = await approveCandidates({ candidateIds: [candidate.id], confirm: true }, h.deps);
+  assert.equal(blocked.approved.length, 0);
+  assert.match(blocked.skipped[0].reason, /uncertainAction/);
+  assert.equal((await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].status, 'uncertain');
+
+  const result = await approveCandidates({
+    candidateIds: [candidate.id],
+    confirm: true,
+    uncertainAction: 'mark-added',
+  }, h.deps);
   assert.deepEqual(result.approved, [candidate.id]);
   assert.equal((await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].status, 'added');
-  assert.equal(h.counts.get('n1') || 0, 0, 'reconciliation does not add a duplicate source');
+  assert.equal(h.counts.get('n1') || 0, 0, 'mark-added does not add a duplicate source');
+});
+
+test('claim renewal starts before a slow capacity check', async () => {
+  let enteredCount;
+  const countStarted = new Promise((resolve) => { enteredCount = resolve; });
+  const h = await harness({
+    now: Date.now(),
+    getSourceCount: async ({ notebookId, counts }) => {
+      enteredCount();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return counts.get(notebookId) || 0;
+    },
+    discover: async () => ({ newestVideoId: 'slow-count', items: [item('slow-count', '2026-08-01T00:00:00Z')] }),
+  });
+  h.deps.now = () => Date.now();
+  h.deps.claimLeaseMs = 30;
+  const created = await addWatch({ source: 'UCslow-count', notebookId: 'n1' }, h.deps);
+  await syncWatches({ watchId: created.watch.id, force: true }, h.deps);
+  const candidate = (await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0];
+
+  const first = approveCandidates({ candidateIds: [candidate.id], confirm: true }, h.deps);
+  await countStarted;
+  await new Promise((resolve) => setTimeout(resolve, 55));
+  const overlapping = await approveCandidates({
+    candidateIds: [candidate.id],
+    confirm: true,
+    uncertainAction: 'retry-add',
+  }, h.deps);
+  const completed = await first;
+
+  assert.deepEqual(completed.approved, [candidate.id]);
+  assert.equal(overlapping.approved.length, 0);
+  assert.match(overlapping.skipped[0].reason, /already being processed/);
+  assert.equal(h.counts.get('n1'), 1);
+});
+
+test('a lost claim after the external add is not reported as approved', async () => {
+  let candidateId;
+  let h;
+  h = await harness({
+    addSource: async () => {
+      await updateState('default', (state) => {
+        const candidate = state.candidates[candidateId];
+        candidate.status = 'uncertain';
+        candidate.claimToken = undefined;
+        candidate.claimUntilAt = undefined;
+        candidate.lastError = 'simulated ownership loss after external add';
+      }, { baseDir: h.baseDir, now: h.deps.now });
+    },
+    discover: async () => ({ newestVideoId: 'lost-finish', items: [item('lost-finish', '2026-08-01T00:00:00Z')] }),
+  });
+  const created = await addWatch({ source: 'UClost-finish', notebookId: 'n1' }, h.deps);
+  await syncWatches({ watchId: created.watch.id, force: true }, h.deps);
+  candidateId = (await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].id;
+
+  const result = await approveCandidates({ candidateIds: [candidateId], confirm: true }, h.deps);
+
+  assert.equal(result.approved.length, 0);
+  assert.match(result.errors[0].error, /claim ownership was lost/);
+  assert.equal(h.counts.get('n1'), 1, 'the external add happened even though state ownership was lost');
+  assert.equal((await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].status, 'uncertain');
 });
 
 test('add adapters must confirm added:true and live claims renew until add completes', async () => {
@@ -415,7 +512,7 @@ test('add adapters must confirm added:true and live claims renew until add compl
     discover: async () => ({ newestVideoId: 'strict', items: [item('strict', '2026-08-01T00:00:00Z')] }),
   });
   h.deps.claimLeaseMs = 30;
-  const created = await addWatch({ source: 'UCstrict', notebookId: 'n1', mode: 'auto', minAutoAddAgeHours: 0 }, h.deps);
+  const created = await addWatch({ source: 'UCstrict', notebookId: 'n1', mode: 'auto', confirmAuto: true, minAutoAddAgeHours: 0 }, h.deps);
   const result = await syncWatches({ watchId: created.watch.id, force: true }, h.deps);
   assert.equal(result.retries, 1);
   assert.equal(addCalls, 1);

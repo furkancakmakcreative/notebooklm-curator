@@ -194,6 +194,75 @@ test('reports a missing cursor and honors the page cap', async () => {
   assert.equal(result.items.length, 2);
 });
 
+test('finds a private cursor by raw video ID and stops without truncating', async () => {
+  const calls = [];
+  const request = async (path, params) => {
+    calls.push({ path, params });
+    return {
+      items: [
+        playlistItem('new', '2026-08-14T00:00:00Z'),
+        playlistItem('private-cursor', '2026-08-13T00:00:00Z', {
+          title: '[Private video]',
+        }),
+        playlistItem('must-not-be-added', '2026-08-12T00:00:00Z'),
+      ],
+      nextPageToken: 'must-not-be-requested',
+    };
+  };
+
+  const result = await fetchPlaylistItems('UUprivate-cursor', {
+    request,
+    untilVideoId: 'private-cursor',
+    maxPages: 10,
+  });
+
+  assert.equal(result.cursorFound, true);
+  assert.equal(result.truncated, false);
+  assert.equal(result.pages, 1);
+  assert.equal(result.newestVideoId, 'new');
+  assert.deepEqual(result.items.map((entry) => entry.videoId), ['new']);
+  assert.equal(calls.length, 1);
+});
+
+test('uses a private newest item as the next raw cursor without queuing it', async () => {
+  const request = async () => ({
+    items: [
+      playlistItem('private-newest', '2026-08-14T00:00:00Z', {
+        title: '[Private video]',
+      }),
+      playlistItem('visible', '2026-08-13T00:00:00Z'),
+    ],
+  });
+
+  const result = await fetchPlaylistItems('UUprivate-newest', { request });
+
+  assert.equal(result.newestVideoId, 'private-newest');
+  assert.deepEqual(result.items.map((entry) => entry.videoId), ['visible']);
+});
+
+test('finds the cursor from snippet.resourceId when contentDetails lacks a video ID', async () => {
+  const request = async () => ({
+    items: [{
+      snippet: {
+        title: '[Deleted video]',
+        resourceId: { videoId: 'snippet-only-cursor' },
+      },
+      contentDetails: {},
+    }],
+    nextPageToken: 'must-not-be-requested',
+  });
+
+  const result = await fetchPlaylistItems('UUsnippet-cursor', {
+    request,
+    untilVideoId: 'snippet-only-cursor',
+  });
+
+  assert.equal(result.cursorFound, true);
+  assert.equal(result.newestVideoId, 'snippet-only-cursor');
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.items, []);
+});
+
 test('discoverWatch uses uploads playlist for channels and canonical ID for playlists', async () => {
   const seen = [];
   const request = async (path, params) => {

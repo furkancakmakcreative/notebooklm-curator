@@ -82,7 +82,8 @@ Required fields:
 
 `report` and `review` both persist candidates so they are not rediscovered. Review candidates are
 eligible for later approval. Report mode never adds automatically. Auto mode may add only after all
-capacity and age checks pass.
+capacity and age checks pass, and enabling persistent auto mode requires an explicit
+`confirmAuto: true` acknowledgement.
 
 ## Candidate record
 
@@ -107,8 +108,10 @@ Required fields:
 Retries use bounded exponential delays and never create another candidate for the same watch and
 video. Explicit approval may attempt a young video; automatic mode waits until
 `minAutoAddAgeHours`. Failed NotebookLM additions become `retry`, not `added`. An expired add claim
-becomes `uncertain` and is never retried automatically; explicit approval first reconciles it against
-the notebook.
+becomes `uncertain` and is never retried or marked as added automatically. Because NotebookLM does
+not expose source URLs, title equality is not identity proof. Explicit approval must choose either
+`uncertainAction: "mark-added"` after confirming the source exists, or
+`uncertainAction: "retry-add"` after confirming it does not.
 
 ## YouTube discovery
 
@@ -131,6 +134,8 @@ uses `channels.list(part=snippet,contentDetails)` with `id` or `forHandle`. Incr
 the channel's uploads playlist or the configured playlist with `playlistItems.list`, 50 items per
 page. Pagination stops at the persisted cursor or at a conservative page limit. Manifest dedupe is
 the final protection if a cursor disappears because a playlist was reordered or an item was removed.
+Cursor comparison and `newestVideoId` use the raw playlist item video ID before private/deleted
+placeholders are filtered, so an inaccessible item cannot hide the pagination boundary.
 
 Initial watch creation baselines the current newest video. `initialItems` defaults to 0 and is capped
 at 50. When non-zero, only that many recent items become candidates.
@@ -175,11 +180,13 @@ need only the YouTube API key.
 
 The first release exposes five tools:
 
-- `nlm_watch_source`: resolve and add a channel or playlist watch.
+- `nlm_watch_source`: resolve and add a channel or playlist watch; `auto` requires
+  `confirmAuto:true`.
 - `nlm_manage_watches`: list, pause, resume, update policy fields, or remove a watch.
 - `nlm_sync_watches`: run due watches or force a specific/all watch sync.
 - `nlm_list_candidates`: filter candidates by watch and status.
-- `nlm_approve_candidates`: require `confirm:true`, then add selected candidate IDs sequentially.
+- `nlm_approve_candidates`: require `confirm:true`, then add selected candidate IDs sequentially;
+  uncertain candidates additionally require `uncertainAction`.
 
 Watch removal deletes only curator tracking state. It never removes a NotebookLM source. Candidate
 approval must enforce notebook capacity immediately before each add.

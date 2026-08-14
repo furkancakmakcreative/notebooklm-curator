@@ -154,13 +154,15 @@ Modes:
 - `report`: records and reports new candidates.
 - `review`: queues candidates for `nlm_approve_candidates` (default).
 - `auto`: adds eligible videos automatically after `minAutoAddAgeHours`
-  (default 72 hours), while enforcing the configured source budget.
+  (default 72 hours), while enforcing the configured source budget. Creating
+  or updating a watch to this persistent mode requires `confirmAuto: true`.
 
 Every video is tracked by its canonical YouTube ID. Repeated runs are
 idempotent, and watches targeting the same notebook serialize additions so
 they cannot race past the source limit. A process crash during an add produces
-an `uncertain` candidate; it is never retried automatically and must first be
-reconciled against the notebook.
+an `uncertain` candidate; it is never retried or marked as added automatically.
+After checking the notebook, explicitly approve it with `uncertainAction` set
+to `mark-added` if the source is already present, or `retry-add` if it is absent.
 
 NotebookLM limits vary by plan. At the time of writing they are 50 sources for
 Standard, 100 for Plus, 300 for Pro, and 500 or 600 for Ultra. Set
@@ -302,9 +304,10 @@ this is cheap insurance against that, not a confirmed root cause.
 - **Playlist scans are bounded.** Playlists can be reordered, so they are
   rescanned and deduplicated instead of trusting a cursor. If `maxPages` is too
   low, the sync reports truncation and does not mark the watch successful.
-- **Crash reconciliation uses exact titles.** NotebookLM does not expose source
-  URLs in the DOM, so an `uncertain` add can only be reconciled against the
-  visible source title before a confirmed retry.
+- **Crash recovery needs an explicit decision.** NotebookLM does not expose
+  source URLs in the DOM, so a visible title cannot prove identity. An
+  `uncertain` candidate therefore stays blocked until the user explicitly
+  chooses `mark-added` or `retry-add`.
 
 ## Roadmap
 

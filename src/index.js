@@ -280,7 +280,7 @@ export const TOOLS = [
   {
     name: 'nlm_watch_source',
     description:
-      'Resolves a YouTube channel or playlist and adds it as a persisted NotebookLM watch.',
+      'Resolves a YouTube channel or playlist and adds it as a persisted NotebookLM watch. Persistent auto mode additionally requires confirmAuto:true.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -288,6 +288,10 @@ export const TOOLS = [
         notebookId: { type: 'string' },
         account: { type: 'string' },
         mode: { type: 'string', enum: ['report', 'review', 'auto'] },
+        confirmAuto: {
+          type: 'boolean',
+          description: 'Required as true when mode:auto enables persistent unattended additions.',
+        },
         intervalHours: { type: 'number', minimum: 1 },
         sourceLimit: { type: 'integer', minimum: 1 },
         reserveSlots: { type: 'integer', minimum: 0 },
@@ -312,6 +316,10 @@ export const TOOLS = [
         account: { type: 'string' },
         notebookId: { type: 'string' },
         mode: { type: 'string', enum: ['report', 'review', 'auto'] },
+        confirmAuto: {
+          type: 'boolean',
+          description: 'Required as true when an update changes the watch to mode:auto.',
+        },
         intervalHours: { type: 'number', minimum: 1 },
         sourceLimit: { type: 'integer', minimum: 1 },
         reserveSlots: { type: 'integer', minimum: 0 },
@@ -354,7 +362,7 @@ export const TOOLS = [
   {
     name: 'nlm_approve_candidates',
     description:
-      'Approves candidate IDs sequentially after requiring confirm:true and checking NotebookLM capacity before each add.',
+      'Approves candidate IDs sequentially after requiring confirm:true and checking NotebookLM capacity. Uncertain candidates remain untouched unless uncertainAction explicitly says mark-added or retry-add.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -365,6 +373,12 @@ export const TOOLS = [
           items: { type: 'string' },
         },
         confirm: { type: 'boolean' },
+        uncertainAction: {
+          type: 'string',
+          enum: ['mark-added', 'retry-add'],
+          description:
+            'Required only for uncertain candidates: mark-added confirms the source already exists; retry-add confirms it is absent and may be added again.',
+        },
       },
       required: ['candidateIds', 'confirm'],
     },
@@ -571,7 +585,7 @@ function scheduleStartupCatchUp(watchDeps = {}) {
 
 export async function startServer({ watchDeps = {} } = {}) {
   const server = new Server(
-    { name: 'notebooklm-curator', version: '0.2.0' },
+    { name: 'notebooklm-curator', version: '0.2.1' },
     { capabilities: { tools: {} } },
   );
 

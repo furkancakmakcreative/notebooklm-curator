@@ -230,14 +230,19 @@ export async function fetchPlaylistItems(playlistId, options = {}) {
 
     let stop = false;
     for (const rawItem of json?.items || []) {
-      const item = normalizePlaylistItem(rawItem);
-      if (!item) continue;
-      if (!newestVideoId) newestVideoId = item.videoId;
-      if (item.videoId === opts.untilVideoId) {
+      // Cursor identity must survive YouTube replacing a video's metadata
+      // with a Private/Deleted placeholder. Filtering decides whether an
+      // item becomes a candidate; it must not hide the pagination boundary.
+      const rawVideoId =
+        rawItem?.contentDetails?.videoId || rawItem?.snippet?.resourceId?.videoId || null;
+      if (!newestVideoId && rawVideoId) newestVideoId = rawVideoId;
+      if (rawVideoId && rawVideoId === opts.untilVideoId) {
         cursorFound = true;
         stop = true;
         break;
       }
+      const item = normalizePlaylistItem(rawItem);
+      if (!item) continue;
       if (!seen.has(item.videoId)) {
         seen.add(item.videoId);
         items.push(item);

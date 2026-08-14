@@ -22,6 +22,7 @@ const MODES = new Set(['report', 'review', 'auto']);
 const KINDS = new Set(['youtube-channel', 'youtube-playlist']);
 const CANDIDATE_STATUSES = new Set(['reported', 'pending', 'retry', 'adding', 'uncertain', 'added', 'ignored']);
 const MANAGE_ACTIONS = new Set(['list', 'pause', 'resume', 'update', 'remove']);
+const UNCERTAIN_ACTIONS = new Set(['mark-added', 'retry-add']);
 
 // A claim is persisted in the manifest. This protects the add side effect even
 // when two sync calls discover the same candidate at the same time, and lets a
@@ -138,12 +139,6 @@ async function defaultNotebookApi() {
           }
           return { added: true, before, after };
         },
-        async hasSource({ account, notebookId, candidate, title }) {
-          const page = await browser.getPage({ account });
-          await notebooklm.gotoNotebook(page, notebookId);
-          const targetTitle = title ?? candidate?.title;
-          return (await notebooklm.listSources(page)).some((source) => source.title === targetTitle);
-        },
       }),
     );
   }
@@ -179,20 +174,6 @@ async function addNotebookSource(api, input) {
   return result;
 }
 
-async function reconcileNotebookSource(api, input) {
-  const fn = api.hasSource || api.containsSource;
-  if (typeof fn !== 'function') {
-    throw new Error('NotebookLM adapter cannot reconcile an uncertain add');
-  }
-  const result = await fn.call(api, input);
-  if (typeof result === 'boolean') return result;
-  if (isObject(result)) {
-    const present = result.present ?? result.hasSource ?? result.containsSource;
-    if (typeof present === 'boolean') return present;
-  }
-  throw new TypeError('NotebookLM reconciliation must return a boolean');
-}
-
 function stringRequired(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} must be a non-empty string`);
   return value.trim();
@@ -222,6 +203,12 @@ function policyFrom(input = {}, base = DEFAULTS) {
     throw new RangeError('reserveSlots must be below sourceLimit');
   }
   return policy;
+}
+
+function requireAutoConfirmation(input, mode) {
+  if (mode === 'auto' && input.confirmAuto !== true) {
+    throw new Error('confirmAuto:true is required to enable persistent auto mode');
+  }
 }
 
 function sourceInput(input = {}) {
@@ -410,12 +397,15 @@ function expireClaimsInState(state, atMs) {
 }
 
 async function renewClaim(account, claimed, deps) {
+  let renewed = false;
   await update(account, deps, (state) => {
     const candidate = state.candidates[claimed.id];
     if (candidate?.status === CLAIM_STATUS && candidate.claimToken === claimed.claimToken) {
       candidate.claimUntilAt = iso(nowMs(deps) + (deps.claimLeaseMs ?? DEFAULTS.claimLeaseMs));
+      renewed = true;
     }
   });
+  return renewed;
 }
 
 function startClaimLeaseRenewal(account, claimed, deps) {
@@ -464,23 +454,27 @@ async function claimCandidate(account, candidateId, deps, atMs, { ignoreAge = fa
     candidate.status = CLAIM_STATUS;
     candidate.claimToken = token;
     candidate.claimUntilAt = iso(atMs + (deps.claimLeaseMs ?? DEFAULTS.claimLeaseMs));
-    claimed = { ...candidate, watch: { ...watch }, reconcileUncertain: wasUncertain };
+    claimed = { ...candidate, watch: { ...watch }, wasUncertain };
   });
   return claimed;
 }
 
 async function releaseClaim(account, candidateId, token, deps, status = 'pending') {
+  let released = false;
   await update(account, deps, (state) => {
     const candidate = state.candidates[candidateId];
     if (candidate?.status === CLAIM_STATUS && candidate.claimToken === token) {
       candidate.status = status;
       candidate.claimToken = undefined;
       candidate.claimUntilAt = undefined;
+      released = true;
     }
   });
+  return released;
 }
 
-async function finishCandidate(account, claimed, deps, outcome, atMs, error) {
+async function finishCandidate(account, claimed, deps, outcome, atMs, error, resolution) {
+  let finished = false;
   await update(account, deps, (state) => {
     const candidate = state.candidates[claimed.id];
     if (!candidate || candidate.claimToken !== claimed.claimToken) return;
@@ -492,6 +486,8 @@ async function finishCandidate(account, claimed, deps, outcome, atMs, error) {
       candidate.addedAt = iso(atMs);
       candidate.nextAttemptAt = null;
       candidate.lastError = null;
+      if (resolution) candidate.resolution = resolution;
+      else delete candidate.resolution;
     } else if (outcome === 'uncertain') {
       candidate.status = 'uncertain';
       candidate.nextAttemptAt = null;
@@ -501,7 +497,9 @@ async function finishCandidate(account, claimed, deps, outcome, atMs, error) {
       candidate.nextAttemptAt = iso(atMs + retryDelay(deps, candidate.attempts));
       candidate.lastError = errorText(error);
     }
+    finished = true;
   });
+  return finished;
 }
 
 async function addClaimedCandidate(account, claimed, deps, atMs, summary) {
@@ -512,54 +510,81 @@ async function addClaimedCandidate(account, claimed, deps, atMs, summary) {
     candidate: publicCandidate(claimed),
     watch: claimed.watch,
   };
-  let stopRenewal = () => {};
+  let stopRenewal = startClaimLeaseRenewal(account, claimed, deps);
   let outcome = 'retry';
   let failure;
+  let claimLost = false;
   try {
+    if (!(await renewClaim(account, claimed, deps))) {
+      claimLost = true;
+      throw new Error('candidate claim ownership was lost before capacity check');
+    }
     const api = await getNotebookApi(deps);
-    if (claimed.reconcileUncertain) {
-      const present = await reconcileNotebookSource(api, notebookInput);
-      if (present) {
-        outcome = 'added';
-      } else {
-        const before = await sourceCount(api, notebookInput);
-        const threshold = claimed.watch.sourceLimit - claimed.watch.reserveSlots;
-        if (before >= threshold) {
-          await releaseClaim(account, claimed.id, claimed.claimToken, deps, claimed.reconcileUncertain ? 'uncertain' : 'pending');
-          summary.capacityStop = true;
-          summary.capacityStops.push(claimed.id);
-          return false;
-        }
-        stopRenewal = startClaimLeaseRenewal(account, claimed, deps);
-        await addNotebookSource(api, notebookInput);
-        outcome = 'added';
-      }
-    } else {
-      const before = await sourceCount(api, notebookInput);
-      const threshold = claimed.watch.sourceLimit - claimed.watch.reserveSlots;
-      if (before >= threshold) {
-        await releaseClaim(account, claimed.id, claimed.claimToken, deps);
-        summary.capacityStop = true;
-        summary.capacityStops.push(claimed.id);
+    const before = await sourceCount(api, notebookInput);
+    const threshold = claimed.watch.sourceLimit - claimed.watch.reserveSlots;
+    if (before >= threshold) {
+      const released = await releaseClaim(
+        account,
+        claimed.id,
+        claimed.claimToken,
+        deps,
+        claimed.wasUncertain ? 'uncertain' : 'pending',
+      );
+      if (!released) {
+        summary.candidateErrors.push({
+          candidateId: claimed.id,
+          error: 'candidate claim ownership was lost during capacity check',
+        });
         return false;
       }
-      stopRenewal = startClaimLeaseRenewal(account, claimed, deps);
-      await addNotebookSource(api, notebookInput);
-      outcome = 'added';
+      summary.capacityStop = true;
+      summary.capacityStops.push(claimed.id);
+      return false;
     }
+    if (!(await renewClaim(account, claimed, deps))) {
+      claimLost = true;
+      throw new Error('candidate claim ownership was lost before NotebookLM add');
+    }
+    await addNotebookSource(api, notebookInput);
+    outcome = 'added';
   } catch (error) {
     failure = error;
   } finally {
     stopRenewal();
   }
+  if (claimLost) {
+    summary.candidateErrors.push({ candidateId: claimed.id, error: errorText(failure) });
+    return false;
+  }
   if (outcome === 'added') {
-    await finishCandidate(account, claimed, deps, 'added', atMs);
+    const finished = await finishCandidate(account, claimed, deps, 'added', atMs);
+    if (!finished) {
+      summary.candidateErrors.push({
+        candidateId: claimed.id,
+        error: 'NotebookLM add completed but candidate claim ownership was lost; manual review required',
+      });
+      return false;
+    }
     summary.added++;
     summary.addedCandidateIds.push(claimed.id);
     return true;
   }
-  await finishCandidate(account, claimed, deps, claimed.reconcileUncertain ? 'uncertain' : 'retry', atMs, failure);
-  summary.retries += claimed.reconcileUncertain ? 0 : 1;
+  const finished = await finishCandidate(
+    account,
+    claimed,
+    deps,
+    claimed.wasUncertain ? 'uncertain' : 'retry',
+    atMs,
+    failure,
+  );
+  if (!finished) {
+    summary.candidateErrors.push({
+      candidateId: claimed.id,
+      error: 'candidate claim ownership was lost while recording the failed add',
+    });
+    return false;
+  }
+  summary.retries += claimed.wasUncertain ? 0 : 1;
   summary.candidateErrors.push({ candidateId: claimed.id, error: errorText(failure) });
   return false;
 }
@@ -655,6 +680,7 @@ export async function addWatch(input = {}, deps = {}) {
   const inputUrl = stringRequired(sourceInput(input), 'inputUrl');
   const notebookId = stringRequired(input.notebookId, 'notebookId');
   const policy = policyFrom(input);
+  requireAutoConfirmation(input, policy.mode);
   const initialItems = input.initialItems === undefined ? DEFAULTS.initialItems : input.initialItems;
   numberValue(initialItems, 'initialItems', { integer: true, min: 0 });
   if (initialItems > 50) throw new RangeError('initialItems must be between 0 and 50');
@@ -815,6 +841,10 @@ export async function approveCandidates(input, deps = {}) {
   if (input.confirm !== true) throw new Error('confirm:true is required to approve candidates');
   const account = accountOf(input, deps);
   const ids = assertCandidateIds(input);
+  const uncertainAction = input.uncertainAction;
+  if (uncertainAction !== undefined && !UNCERTAIN_ACTIONS.has(uncertainAction)) {
+    throw new TypeError('uncertainAction must be mark-added or retry-add');
+  }
   const summary = {
     account,
     approved: [],
@@ -822,6 +852,7 @@ export async function approveCandidates(input, deps = {}) {
     capacityStops: [],
     skipped: [],
     errors: [],
+    resolvedUncertain: [],
   };
   for (const id of ids) {
     const state = await read(account, deps);
@@ -839,6 +870,13 @@ export async function approveCandidates(input, deps = {}) {
       summary.skipped.push({ candidateId: id, reason: 'already added' });
       continue;
     }
+    if (candidate.status === 'uncertain' && uncertainAction === undefined) {
+      summary.skipped.push({
+        candidateId: id,
+        reason: 'uncertain candidate requires uncertainAction: mark-added or retry-add',
+      });
+      continue;
+    }
     const atMs = nowMs(deps);
     const claimed = await claimCandidate(account, id, deps, atMs, {
       ignoreAge: true,
@@ -850,9 +888,43 @@ export async function approveCandidates(input, deps = {}) {
       summary.skipped.push({ candidateId: id, reason: 'candidate is already being processed' });
       continue;
     }
+    if (claimed.wasUncertain && uncertainAction === undefined) {
+      await releaseClaim(account, claimed.id, claimed.claimToken, deps, 'uncertain');
+      summary.skipped.push({
+        candidateId: id,
+        reason: 'uncertain candidate requires uncertainAction: mark-added or retry-add',
+      });
+      continue;
+    }
+    if (claimed.wasUncertain && uncertainAction === 'mark-added') {
+      const finished = await finishCandidate(
+        account,
+        claimed,
+        deps,
+        'added',
+        atMs,
+        undefined,
+        'user-confirmed-existing',
+      );
+      if (!finished) {
+        summary.errors.push({
+          candidateId: id,
+          error: 'candidate claim ownership was lost before mark-added could be recorded',
+        });
+        continue;
+      }
+      summary.approved.push(id);
+      summary.resolvedUncertain.push({ candidateId: id, action: uncertainAction });
+      continue;
+    }
     const operation = { added: 0, retries: 0, capacityStop: false, capacityStops: [], addedCandidateIds: [], candidateErrors: [] };
     await addClaimedCandidate(account, claimed, deps, atMs, operation);
-    if (operation.added) summary.approved.push(id);
+    if (operation.added) {
+      summary.approved.push(id);
+      if (claimed.wasUncertain) {
+        summary.resolvedUncertain.push({ candidateId: id, action: uncertainAction });
+      }
+    }
     else if (operation.capacityStop) summary.capacityStops.push(id);
     else if (operation.retries) summary.retries.push(id);
     summary.errors.push(...operation.candidateErrors);
@@ -871,7 +943,7 @@ export async function manageWatches(input = {}, deps = {}) {
     throw new Error('confirm:true is required to remove a watch');
   }
   if (action === 'update') {
-    const allowed = new Set(['mode', 'intervalHours', 'sourceLimit', 'reserveSlots', 'minAutoAddAgeHours', 'notebookId']);
+    const allowed = new Set(['mode', 'intervalHours', 'sourceLimit', 'reserveSlots', 'minAutoAddAgeHours', 'notebookId', 'confirmAuto']);
     for (const key of Object.keys(input)) {
       if (!['action', 'operation', 'account', 'watchId'].includes(key) && !allowed.has(key)) {
         throw new TypeError(`cannot update field: ${key}`);
@@ -886,6 +958,7 @@ export async function manageWatches(input = {}, deps = {}) {
     if (action === 'resume') watch.enabled = true;
     if (action === 'update') {
       const policy = policyFrom(input, watch);
+      if (input.mode !== undefined) requireAutoConfirmation(input, policy.mode);
       Object.assign(watch, policy);
       if (input.notebookId !== undefined) watch.notebookId = stringRequired(input.notebookId, 'notebookId');
     }

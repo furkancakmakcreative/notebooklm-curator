@@ -1,6 +1,6 @@
 {
   "name": "notebooklm-curator",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server for Gemini Notebook (NotebookLM): watch, add, audit and safely prune sources.",
   "type": "module",
   "bin": {
