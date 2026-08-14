@@ -12,6 +12,8 @@
  */
 
 import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -23,6 +25,7 @@ import {
 import { getPage, closeBrowser, isAuthenticated } from './browser.js';
 import * as nlm from './notebooklm.js';
 import * as yt from './youtube.js';
+import * as watches from './watches.js';
 import { DEFAULT_POLICY, audit, findDuplicates, guessCategory } from './policy.js';
 
 // Compact JSON: this is consumed by an LLM, not eyeballed in a terminal —
@@ -36,11 +39,29 @@ const ok = (data) => ({
  * (Node's ENOENT/EACCES messages embed absolute paths, which leak the local
  * username) to an MCP client.
  */
-function sanitizeError(msg) {
+export function sanitizeError(msg) {
   let s = String(msg).replace(/([?&]key=)[^&\s]+/gi, '$1REDACTED');
-  const home = os.homedir();
-  if (home) s = s.split(home).join('~');
-  return s;
+  const privatePaths = [os.homedir(), process.env.NLM_DATA_DIR]
+    .filter((value) => typeof value === 'string' && path.isAbsolute(value))
+    .sort((a, b) => b.length - a.length);
+  for (const privatePath of privatePaths) s = s.split(privatePath).join('~');
+  return s
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>]+/g, '~')
+    .replace(/(^|[^:])\/(?!\/)[^\s"'<>]+/g, '$1~');
+}
+
+const SANITIZED_WATCH_FIELDS = new Set(['error', 'lastError', 'note', 'reason']);
+
+export function sanitizeWatchResult(value, fieldName = '') {
+  if (Array.isArray(value)) return value.map((item) => sanitizeWatchResult(item, fieldName));
+  if (value === null || typeof value !== 'object') {
+    return SANITIZED_WATCH_FIELDS.has(fieldName) && typeof value === 'string'
+      ? sanitizeError(value)
+      : value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, sanitizeWatchResult(item, key)]),
+  );
 }
 
 /**
@@ -50,7 +71,54 @@ function sanitizeError(msg) {
  * browser automation, where a bad value (e.g. a non-string title) would
  * otherwise silently do the wrong thing instead of failing clearly.
  */
-function validateArgs(tool, a) {
+function validateValue(value, schema, key) {
+  if (schema.enum && !schema.enum.includes(value)) {
+    throw new Error(`argument "${key}" must be one of: ${schema.enum.join(', ')}`);
+  }
+
+  if (schema.type === 'string' && typeof value !== 'string') {
+    throw new Error(`argument "${key}" must be a string`);
+  }
+  if (schema.type === 'boolean' && typeof value !== 'boolean') {
+    throw new Error(`argument "${key}" must be a boolean`);
+  }
+  if (schema.type === 'number' || schema.type === 'integer') {
+    if (typeof value !== 'number') throw new Error(`argument "${key}" must be a number`);
+    if (!Number.isFinite(value)) throw new Error(`argument "${key}" must be finite`);
+    if ((schema.integer || schema.type === 'integer') && !Number.isInteger(value)) {
+      throw new Error(`argument "${key}" must be an integer`);
+    }
+    if (schema.minimum !== undefined && value < schema.minimum) {
+      throw new Error(`argument "${key}" must be at least ${schema.minimum}`);
+    }
+    if (schema.maximum !== undefined && value > schema.maximum) {
+      throw new Error(`argument "${key}" must be at most ${schema.maximum}`);
+    }
+  }
+  if (schema.type === 'array') {
+    if (!Array.isArray(value)) throw new Error(`argument "${key}" must be an array`);
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      throw new Error(`argument "${key}" must contain at least ${schema.minItems} item(s)`);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      throw new Error(`argument "${key}" must contain at most ${schema.maxItems} item(s)`);
+    }
+    if (schema.items) {
+      value.forEach((item, index) => validateValue(item, schema.items, `${key}[${index}]`));
+    }
+  }
+  if (
+    schema.type === 'object' &&
+    (typeof value !== 'object' || value === null || Array.isArray(value))
+  ) {
+    throw new Error(`argument "${key}" must be an object`);
+  }
+}
+
+export function validateArgs(tool, a) {
+  if (a === null || typeof a !== 'object' || Array.isArray(a)) {
+    throw new Error('arguments must be an object');
+  }
   const { properties = {}, required = [] } = tool.inputSchema;
   for (const key of required) {
     if (a[key] === undefined || a[key] === null) {
@@ -59,21 +127,7 @@ function validateArgs(tool, a) {
   }
   for (const [key, schema] of Object.entries(properties)) {
     if (a[key] === undefined) continue;
-    if (schema.type === 'string' && typeof a[key] !== 'string') {
-      throw new Error(`argument "${key}" must be a string`);
-    }
-    if (schema.type === 'boolean' && typeof a[key] !== 'boolean') {
-      throw new Error(`argument "${key}" must be a boolean`);
-    }
-    if (schema.type === 'number' && typeof a[key] !== 'number') {
-      throw new Error(`argument "${key}" must be a number`);
-    }
-    if (
-      schema.type === 'object' &&
-      (typeof a[key] !== 'object' || a[key] === null || Array.isArray(a[key]))
-    ) {
-      throw new Error(`argument "${key}" must be an object`);
-    }
+    validateValue(a[key], schema, key);
   }
 }
 
@@ -87,7 +141,7 @@ const fail = (msg) => ({
   isError: true,
 });
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: 'nlm_auth',
     description:
@@ -199,9 +253,10 @@ const TOOLS = [
         notebookId: { type: 'string' },
         account: { type: 'string' },
         searchBudget: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
           description:
-            'How many expensive title searches to allow (100 quota units each, daily quota is 10,000). Default 60.',
+            'How many expensive title search calls to allow. Search calls are counted separately from general list-method quota units. Default 60.',
         },
         categories: {
           type: 'object',
@@ -222,16 +277,102 @@ const TOOLS = [
       required: ['notebookId'],
     },
   },
+  {
+    name: 'nlm_watch_source',
+    description:
+      'Resolves a YouTube channel or playlist and adds it as a persisted NotebookLM watch.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'YouTube channel or playlist URL/ID' },
+        notebookId: { type: 'string' },
+        account: { type: 'string' },
+        mode: { type: 'string', enum: ['report', 'review', 'auto'] },
+        intervalHours: { type: 'number', minimum: 1 },
+        sourceLimit: { type: 'integer', minimum: 1 },
+        reserveSlots: { type: 'integer', minimum: 0 },
+        minAutoAddAgeHours: { type: 'number', minimum: 0 },
+        initialItems: { type: 'integer', minimum: 0, maximum: 50 },
+      },
+      required: ['source', 'notebookId'],
+    },
+  },
+  {
+    name: 'nlm_manage_watches',
+    description:
+      'Lists, pauses, resumes, updates, or removes persisted watches. Removing a watch never removes a NotebookLM source.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'pause', 'resume', 'update', 'remove'] },
+        operation: { type: 'string', enum: ['list', 'pause', 'resume', 'update', 'remove'] },
+        watchId: { type: 'string' },
+        enabled: { type: 'boolean' },
+        confirm: { type: 'boolean' },
+        account: { type: 'string' },
+        notebookId: { type: 'string' },
+        mode: { type: 'string', enum: ['report', 'review', 'auto'] },
+        intervalHours: { type: 'number', minimum: 1 },
+        sourceLimit: { type: 'integer', minimum: 1 },
+        reserveSlots: { type: 'integer', minimum: 0 },
+        minAutoAddAgeHours: { type: 'number', minimum: 0 },
+      },
+    },
+  },
+  {
+    name: 'nlm_sync_watches',
+    description: 'Runs due watches, or forces one watch or all watches to sync.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string' },
+        watchId: { type: 'string' },
+        force: { type: 'boolean' },
+        maxPages: { type: 'integer', minimum: 1 },
+      },
+    },
+  },
+  {
+    name: 'nlm_list_candidates',
+    description: 'Lists discovered watch candidates, optionally filtered by watch and status.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string' },
+        watchId: { type: 'string' },
+        status: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'string',
+            enum: ['reported', 'pending', 'retry', 'added', 'ignored', 'uncertain'],
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'nlm_approve_candidates',
+    description:
+      'Approves candidate IDs sequentially after requiring confirm:true and checking NotebookLM capacity before each add.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string' },
+        candidateIds: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string' },
+        },
+        confirm: { type: 'boolean' },
+      },
+      required: ['candidateIds', 'confirm'],
+    },
+  },
 ];
 
-const server = new Server(
-  { name: 'notebooklm-curator', version: '0.1.0' },
-  { capabilities: { tools: {} } },
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+export function createToolHandler({ watchDeps = {} } = {}) {
+  return async (req) => {
   const { name } = req.params;
   const a = req.params.arguments || {};
 
@@ -330,7 +471,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           .filter((s) => s.type === 'youtube')
           .map((s) => ({ title: s.title, videoId: known[s.title] }));
 
-        const { results, searchesSpent, quotaUnitsApprox } = await yt.enrich(entries, {
+        const {
+          results,
+          searchesSpent,
+          searchCallsSpent,
+          quotaUnitsApprox,
+          quota: quotaDetails,
+        } = await yt.enrich(entries, {
           budget: a.searchBudget ?? 60,
         });
 
@@ -359,12 +506,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           policy: Object.fromEntries(
             Object.entries(policy.categories).map(([k, v]) => [k, v.days]),
           ),
-          quota: { searchesSpent, quotaUnitsApprox },
+          quota: {
+            ...(quotaDetails || {}),
+            searchesSpent,
+            searchCallsSpent,
+            quotaUnitsApprox,
+          },
           duplicates: findDuplicates(sources),
           ...auditSummary,
           ...(a.includeFresh ? { all } : {}),
         });
       }
+
+      case 'nlm_watch_source':
+        return ok(sanitizeWatchResult(await watches.addWatch(a, watchDeps)));
+
+      case 'nlm_manage_watches':
+        return ok(sanitizeWatchResult(await watches.manageWatches(a, watchDeps)));
+
+      case 'nlm_sync_watches':
+        return ok(sanitizeWatchResult(await watches.syncWatches(a, watchDeps)));
+
+      case 'nlm_list_candidates':
+        return ok(sanitizeWatchResult(await watches.listCandidates(a, watchDeps)));
+
+      case 'nlm_approve_candidates':
+        return ok(sanitizeWatchResult(await watches.approveCandidates(a, watchDeps)));
 
       default:
         return fail(`unknown tool: ${name}`);
@@ -372,12 +539,65 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   } catch (err) {
     return fail(err?.message || err);
   }
-});
+  };
+}
 
-process.on('SIGINT', async () => {
-  await closeBrowser();
-  process.exit(0);
-});
+function startupDelayMs() {
+  const value = Number(process.env.NLM_STARTUP_DELAY_MS ?? 1500);
+  return Number.isFinite(value) && value >= 0 ? value : 1500;
+}
 
-await server.connect(new StdioServerTransport());
-console.error('notebooklm-curator ready (stdio)');
+function scheduleStartupCatchUp(watchDeps = {}) {
+  const account = process.env.NLM_STARTUP_ACCOUNT || 'default';
+  const timer = setTimeout(() => {
+    void watches
+      .startupCatchUp({ account }, watchDeps)
+      .then((summary) => {
+        if (summary.watchErrors?.length) {
+          const safe = {
+            account: summary.account,
+            watchErrors: summary.watchErrors,
+          };
+          console.error(`startup catch-up completed with watch errors: ${sanitizeError(JSON.stringify(safe))}`);
+        }
+      })
+      .catch((error) => {
+        console.error(`startup catch-up failed: ${sanitizeError(error?.message || error)}`);
+      });
+  }, startupDelayMs());
+  timer.unref?.();
+  return timer;
+}
+
+export async function startServer({ watchDeps = {} } = {}) {
+  const server = new Server(
+    { name: 'notebooklm-curator', version: '0.2.0' },
+    { capabilities: { tools: {} } },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(CallToolRequestSchema, createToolHandler({ watchDeps }));
+
+  process.once('SIGINT', async () => {
+    await closeBrowser();
+    process.exit(0);
+  });
+
+  await server.connect(new StdioServerTransport());
+  console.error('notebooklm-curator ready (stdio)');
+  scheduleStartupCatchUp(watchDeps);
+  return server;
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  await startServer();
+}

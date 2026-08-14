@@ -1,17 +1,20 @@
 {
   "name": "notebooklm-curator",
-  "version": "0.1.0",
-  "description": "MCP server for Gemini Notebook (NotebookLM): list, audit and remove sources by shelf life.",
+  "version": "0.2.0",
+  "description": "MCP server for Gemini Notebook (NotebookLM): watch, add, audit and safely prune sources.",
   "type": "module",
   "bin": {
-    "notebooklm-curator": "src/index.js"
+    "notebooklm-curator": "src/index.js",
+    "notebooklm-curator-sync": "src/cli.js"
   },
   "main": "src/index.js",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node --env-file=.env src/index.js"
+    "start": "node --env-file=.env src/index.js",
+    "sync": "node --env-file=.env src/cli.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -30,6 +33,8 @@
     "model-context-protocol",
     "notebooklm",
     "gemini-notebook",
+    "youtube",
+    "source-sync",
     "claude",
     "playwright",
     "browser-automation"

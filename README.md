@@ -1,6 +1,6 @@
 # notebooklm-curator
 
-An MCP server that **audits and prunes** Gemini Notebook (formerly NotebookLM) libraries.
+An MCP server that **watches, audits and safely prunes** Gemini Notebook (formerly NotebookLM) libraries.
 
 > **Not an official Google or Anthropic integration.** This drives NotebookLM
 > through your own signed-in Chrome profile — it is not affiliated with,
@@ -9,15 +9,19 @@ An MCP server that **audits and prunes** Gemini Notebook (formerly NotebookLM) l
 > supports multiple profiles. See [Known limitations](#known-limitations) for
 > the full picture before pointing it at anything you care about.
 
-Off-the-shelf NotebookLM MCPs give you `add_source` and `ask_question`. None of them give you these three:
+The curator adds source lifecycle tools on top of the usual add-and-ask workflow:
 
 | Tool | What it does | In other NotebookLM MCPs |
 |---|---|---|
 | `nlm_list_sources` | Lists the sources in a notebook | ✗ missing |
 | `nlm_remove_source` | Deletes a source | ✗ missing |
 | `nlm_audit` | Flags stale sources by shelf life | ✗ missing |
+| `nlm_watch_source` | Watches a YouTube channel or playlist | ✗ missing |
+| `nlm_sync_watches` | Finds and optionally adds new videos | ✗ missing |
 
-Also included: `nlm_auth`, `nlm_list_notebooks`, `nlm_create_notebook`, `nlm_rename_notebook`, `nlm_add_source`, `nlm_ask`.
+Also included: `nlm_auth`, `nlm_list_notebooks`, `nlm_create_notebook`,
+`nlm_rename_notebook`, `nlm_add_source`, `nlm_ask`, `nlm_manage_watches`,
+`nlm_list_candidates`, and `nlm_approve_candidates`.
 
 ![nlm_audit output inside Claude Desktop](docs/demo.png)
 
@@ -64,7 +68,7 @@ cd notebooklm-curator
 npm install
 ```
 
-Copy `.env.example` to `.env` if you want `nlm_audit`'s YouTube date resolution:
+Copy `.env.example` to `.env` for YouTube date resolution and watched sources:
 
 ```
 YOUTUBE_API_KEY=your_own_key
@@ -90,7 +94,7 @@ config on macOS/Linux:
 }
 ```
 
-Fully restart Claude Desktop. On first use, call `nlm_auth`: a visible Chrome
+Fully restart your MCP client. On first use, call `nlm_auth`: a visible Chrome
 window opens, you sign in with your Google account once, and the session is
 saved to a persistent local profile. Every run after that is headless.
 
@@ -108,19 +112,80 @@ Google Cloud Console → **APIs & Services**
 Don't skip step 3. If a restricted key ever leaks, it can only read public
 YouTube data — it can't touch your account or spend money.
 
-### Quota — this matters
+### Quota
 
-The free daily quota is 10,000 units:
+The current YouTube Data API model counts these list requests at one unit each:
 
-- `videos.list` → **1 unit** per call (up to 50 videos)
-- `search.list` → **100 units** per call (one title)
+- `videos.list`, `channels.list`, `playlists.list` and `playlistItems.list` → **1 unit** per call
+- `search.list` → **1 unit** per call and a separate default allowance of 100 search calls per day
 
-NotebookLM never exposes a source's URL, so the **first audit** has to search
-by title: 83 sources ≈ 8,300 units, most of the daily quota. But that search
-returns a `videoId`. Save it and pass it back to `nlm_audit` as `knownIds` —
-every later audit then uses the cheap `videos.list` path, ~2 units total.
+NotebookLM never exposes a source's URL, so an audit may need title searches.
+Save the returned `videoId` values and pass them back to `nlm_audit` as
+`knownIds`; later audits use batched `videos.list` calls. Channel and playlist
+watches avoid title search entirely and use canonical IDs.
 
-The `searchBudget` parameter caps this cost (default 60).
+The `searchBudget` parameter caps search calls (default 60).
+
+YouTube changed this accounting in June 2026. See the current
+[quota table](https://developers.google.com/youtube/v3/determine_quota_cost) and
+[`search.list` reference](https://developers.google.com/youtube/v3/docs/search/list).
+
+---
+
+## Watched YouTube sources
+
+`nlm_watch_source` accepts a channel ID, `@handle`, channel URL, playlist ID,
+or playlist URL. A new watch baselines the newest current video and does not
+pull the existing archive unless `initialItems` is explicitly set (maximum 50).
+
+```json
+{
+  "source": "@GoogleDevelopers",
+  "notebookId": "...",
+  "mode": "review",
+  "intervalHours": 48,
+  "sourceLimit": 50,
+  "reserveSlots": 5
+}
+```
+
+Modes:
+
+- `report`: records and reports new candidates.
+- `review`: queues candidates for `nlm_approve_candidates` (default).
+- `auto`: adds eligible videos automatically after `minAutoAddAgeHours`
+  (default 72 hours), while enforcing the configured source budget.
+
+Every video is tracked by its canonical YouTube ID. Repeated runs are
+idempotent, and watches targeting the same notebook serialize additions so
+they cannot race past the source limit. A process crash during an add produces
+an `uncertain` candidate; it is never retried automatically and must first be
+reconciled against the notebook.
+
+NotebookLM limits vary by plan. At the time of writing they are 50 sources for
+Standard, 100 for Plus, 300 for Pro, and 500 or 600 for Ultra. Set
+`sourceLimit` to the target account's real limit. `reserveSlots` keeps room for
+manual sources. Current limits are listed in
+[NotebookLM Help](https://support.google.com/notebooklm/answer/16213268).
+
+### Automatic catch-up and scheduling
+
+When the MCP server starts, it performs a non-blocking catch-up for watches
+whose last successful sync is older than their `intervalHours`. If the computer
+was off at the scheduled time, the next launch finds everything since the last
+stored video instead of losing the missed run.
+
+For Windows Task Scheduler or cron, use the separate one-shot command:
+
+```bash
+npm run sync -- --account default
+```
+
+Useful options are `--watch-id`, `--force`, and `--max-pages`. The command
+prints compact JSON and exits after one run. Configure desktop schedulers to
+run missed tasks as soon as the computer becomes available. A powered-off
+computer cannot run locally; a future hosted worker would be required for
+true off-device execution.
 
 ---
 
@@ -230,18 +295,26 @@ this is cheap insurance against that, not a confirmed root cause.
   no-op on Windows NTFS (no ACL is set) — on Windows the directory's
   permissions are whatever the OS default is for your user folder, not
   actually restricted to your account alone.
+- **Watched YouTube sources need an API key.** Automatic NotebookLM adds also
+  need the saved Chrome session to remain authenticated.
+- **Very new or uncaptioned videos may not import.** Automatic mode waits 72
+  hours by default because NotebookLM may reject recently uploaded videos.
+- **Playlist scans are bounded.** Playlists can be reordered, so they are
+  rescanned and deduplicated instead of trusting a cursor. If `maxPages` is too
+  low, the sync reports truncation and does not mark the watch successful.
+- **Crash reconciliation uses exact titles.** NotebookLM does not expose source
+  URLs in the DOM, so an `uncertain` add can only be reconciled against the
+  visible source title before a confirmed retry.
 
 ## Roadmap
 
-Ideas that didn't make v0.1, roughly in order of value:
+Ideas intentionally left out of the focused v0.2 release:
 
-- Export an `nlm_audit` report to Markdown/CSV for offline review.
-- A batch-delete tool that takes a pre-approved list of `{title, occurrence}`
-  pairs (still gated by an explicit human-approved list, not autonomous).
-- Cross-notebook source search/duplicate detection (`findDuplicates` already
-  generalizes to this — it just isn't wired up across notebooks yet).
-- Date resolution for web sources via `Last-Modified` headers or
-  `article:published_time` / JSON-LD `datePublished` metadata.
+- Hosted discovery that works while the user's computer is powered off.
+- YouTube push notifications instead of periodic polling.
+- RSS and sitemap watch adapters.
+- Optional Apify discovery for sites without a stable API or feed.
+- Notifications and cross-notebook source search.
 
 Contributions on any of these are welcome.
 
