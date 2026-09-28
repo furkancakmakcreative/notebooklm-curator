@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { syncWatches as defaultSyncWatches } from './watches.js';
 
@@ -90,7 +91,17 @@ export async function runCli(argv = [], deps = {}) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compare real paths: npx and global installs run this through a symlink.
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   const exitCode = await runCli(process.argv.slice(2));
   process.exitCode = exitCode;
 }

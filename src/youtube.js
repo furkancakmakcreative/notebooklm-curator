@@ -1,5 +1,9 @@
 /**
- * YouTube Data API v3 — publish dates.
+ * YouTube Data API v3, plus a keyless RSS fallback for watches.
+ *
+ * Without YOUTUBE_API_KEY, channel and playlist watches read YouTube's public
+ * RSS feeds (newest 15 videos, no quota, no Google Cloud account). Title
+ * search for nlm_audit has no keyless equivalent and is simply skipped.
  *
  * QUOTA MATTERS. Default daily quota is 10,000 units:
  *   videos.list  = 1 general quota unit per call (up to 50 ids)
@@ -14,9 +18,24 @@
 
 const BASE = 'https://www.googleapis.com/youtube/v3';
 
+/**
+ * The configured key, or '' when unset. Blank values and unfilled
+ * `${user_config...}` placeholders (an optional field left empty in the
+ * Claude Desktop extension settings) count as unset.
+ */
+export function configuredKey() {
+  const value = String(process.env.YOUTUBE_API_KEY || '').trim();
+  return /^\$\{.*\}$/.test(value) ? '' : value;
+}
+
+/** True when a YouTube Data API key is configured. */
+export function hasApiKey(key) {
+  return Boolean(key || configuredKey());
+}
+
 function requireKey(key) {
-  const k = key || process.env.YOUTUBE_API_KEY;
-  if (!k) throw new Error('YOUTUBE_API_KEY is not set (add it to your .env file)');
+  const k = key || configuredKey();
+  if (!k) throw new Error('YOUTUBE_API_KEY is not set. It is optional; see "YouTube API key" in the README.');
   return k;
 }
 
@@ -136,6 +155,7 @@ function sourceTitle(item) {
 export async function resolveYouTubeSource(input, options = {}) {
   const parsed = parseYouTubeSource(input);
   const { key } = apiOptions(options);
+  if (usesFeeds(apiOptions(options))) return resolveFromFeed(parsed, apiOptions(options));
   const request = requestFor(apiOptions(options));
 
   if (parsed.kind === 'youtube-channel') {
@@ -276,6 +296,7 @@ export async function fetchPlaylistItems(playlistId, options = {}) {
 /** Discover a watch using its resolved uploads playlist or playlist ID. */
 export async function discoverWatch(watch, options = {}) {
   if (!watch || typeof watch !== 'object') throw new Error('A watch record is required');
+  if (usesFeeds(apiOptions(options))) return discoverFromFeed(watch, apiOptions(options));
   const playlistId = watch.uploadsPlaylistId || watch.canonicalId;
   if (!playlistId) throw new Error('Watch has no playlist ID');
   const fetchOptions = {
@@ -421,5 +442,210 @@ export async function enrich(entries, { key, budget = 60, request } = {}) {
       listUnits: listRequests,
       totalRequestUnitsApprox,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Keyless mode: public RSS feeds
+// ---------------------------------------------------------------------------
+
+const FEED_BASE = 'https://www.youtube.com/feeds/videos.xml';
+/** YouTube feeds list at most this many videos. */
+export const FEED_LIMIT = 15;
+
+/** Feeds are used when no API key is set and no API request stub is injected. */
+function usesFeeds(options = {}) {
+  if (options.useFeeds === true) return true;
+  if (options.useFeeds === false || options.request) return false;
+  return !hasApiKey(options.key);
+}
+
+async function defaultFetchText(url) {
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: {
+        'Accept-Language': 'en-US,en;q=0.8',
+        // Skips the EU cookie-consent interstitial on channel pages.
+        Cookie: 'SOCS=CAI',
+      },
+    });
+  } catch (err) {
+    throw new Error(`YouTube request failed: ${err?.message || err}`);
+  }
+  if (!res.ok) {
+    const error = new Error(`YouTube returned HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
+  return res.text();
+}
+
+function fetchTextFor(options = {}) {
+  return options.fetchText || defaultFetchText;
+}
+
+function decodeXml(value) {
+  return String(value)
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function tag(xml, name) {
+  const escaped = name.replace(':', '\\:');
+  const match = xml.match(new RegExp(`<${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)</${escaped}>`));
+  return match ? decodeXml(match[1]).trim() : null;
+}
+
+/** Parse a YouTube videos.xml feed into {title, channelId, items}. */
+export function parseFeed(xml) {
+  const text = String(xml || '');
+  if (!/<feed[\s>]/.test(text)) throw new Error('YouTube feed was not valid XML');
+  const firstEntry = text.search(/<entry[\s>]/);
+  const head = firstEntry === -1 ? text : text.slice(0, firstEntry);
+  const items = [];
+  const seen = new Set();
+  for (const match of text.matchAll(/<entry[\s>][\s\S]*?<\/entry>/g)) {
+    const entry = match[0];
+    const videoId = tag(entry, 'yt:videoId');
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    const author = tag(entry, 'author') || '';
+    items.push({
+      videoId,
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+      title: tag(entry, 'title'),
+      channelId: tag(entry, 'yt:channelId'),
+      channelTitle: tag(author, 'name'),
+      publishedAt: tag(entry, 'published'),
+    });
+  }
+  return {
+    title: tag(head, 'title'),
+    channelId: tag(head, 'yt:channelId'),
+    items,
+  };
+}
+
+function feedUrl(watchOrParsed) {
+  const url = new URL(FEED_BASE);
+  if (watchOrParsed.kind === 'youtube-playlist') {
+    url.searchParams.set('playlist_id', watchOrParsed.playlistId || watchOrParsed.canonicalId);
+  } else {
+    url.searchParams.set('channel_id', watchOrParsed.channelId || watchOrParsed.canonicalId);
+  }
+  return url.href;
+}
+
+async function readFeed(target, options) {
+  try {
+    return parseFeed(await fetchTextFor(options)(feedUrl(target)));
+  } catch (err) {
+    if (err?.status === 404) {
+      throw new Error(
+        target.kind === 'youtube-playlist'
+          ? 'YouTube playlist was not found (it may be private)'
+          : 'YouTube channel was not found',
+      );
+    }
+    throw err;
+  }
+}
+
+/** Find the UC… channel ID behind an @handle from the public channel page. */
+export function channelIdFromPage(html) {
+  const text = String(html || '');
+  const patterns = [
+    /<link rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})"/,
+    /"externalId":"(UC[A-Za-z0-9_-]{22})"/,
+    /<meta itemprop="(?:channelId|identifier)" content="(UC[A-Za-z0-9_-]{22})"/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+async function resolveFromFeed(parsed, options) {
+  if (parsed.kind === 'youtube-channel') {
+    let channelId = parsed.channelId;
+    if (!channelId) {
+      let html;
+      try {
+        // parseHandle() already limited the handle to URL-safe characters.
+        html = await fetchTextFor(options)(`https://www.youtube.com/${parsed.handle}`);
+      } catch (err) {
+        if (err?.status === 404) throw new Error('YouTube channel was not found');
+        throw err;
+      }
+      channelId = channelIdFromPage(html);
+      if (!channelId) {
+        throw new Error(
+          'Could not read the channel ID from the YouTube page. Use the channel URL that contains /channel/UC..., or set YOUTUBE_API_KEY.',
+        );
+      }
+    }
+    const feed = await readFeed({ kind: 'youtube-channel', channelId }, options);
+    return {
+      kind: 'youtube-channel',
+      canonicalId: channelId,
+      channelId,
+      title: feed.title,
+      channelTitle: feed.title,
+      // Every channel's uploads playlist is its ID with UC swapped for UU, so
+      // adding an API key later switches this watch to the API without edits.
+      uploadsPlaylistId: `UU${channelId.slice(2)}`,
+      via: 'rss',
+    };
+  }
+
+  const feed = await readFeed(parsed, options);
+  const channelTitle = feed.items[0]?.channelTitle || null;
+  return {
+    kind: 'youtube-playlist',
+    canonicalId: parsed.playlistId,
+    playlistId: parsed.playlistId,
+    title: feed.title,
+    channelId: feed.channelId || feed.items[0]?.channelId || null,
+    channelTitle,
+    via: 'rss',
+  };
+}
+
+/**
+ * Discover from the feed. It only ever shows the newest 15 videos, so a
+ * cursor that fell off the end is not treated as truncation (that would
+ * block the watch forever); the items are deduplicated downstream anyway.
+ */
+async function discoverFromFeed(watch, options) {
+  const feed = await readFeed(watch, options);
+  const until = options.untilVideoId === undefined ? watch.cursorVideoId : options.untilVideoId;
+  const items = [];
+  let cursorFound = false;
+  for (const item of feed.items) {
+    if (until && item.videoId === until) {
+      cursorFound = true;
+      break;
+    }
+    items.push(item);
+  }
+  items.sort((a, b) => (Date.parse(b.publishedAt || '') || 0) - (Date.parse(a.publishedAt || '') || 0));
+  return {
+    playlistId: watch.kind === 'youtube-playlist' ? watch.canonicalId : watch.uploadsPlaylistId || null,
+    newestVideoId: feed.items[0]?.videoId || null,
+    cursorFound,
+    items,
+    pages: 1,
+    quotaUnits: 0,
+    truncated: false,
+    via: 'rss',
+    feedLimit: FEED_LIMIT,
   };
 }
