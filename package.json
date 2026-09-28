@@ -1,20 +1,28 @@
 {
   "name": "notebooklm-curator",
-  "version": "0.2.1",
-  "description": "MCP server for Gemini Notebook (NotebookLM): watch, add, audit and safely prune sources.",
+  "version": "0.3.0",
+  "description": "MCP server that keeps a NotebookLM (Gemini Notebook) library fresh: follow YouTube channels, audit shelf life, prune sources only with approval.",
   "type": "module",
   "bin": {
     "notebooklm-curator": "src/index.js",
     "notebooklm-curator-sync": "src/cli.js"
   },
   "main": "src/index.js",
+  "files": [
+    "src/",
+    "README.md",
+    "README.tr.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "start": "node --env-file=.env src/index.js",
     "sync": "node --env-file=.env src/cli.js",
-    "test": "node --test"
+    "test": "node --test",
+    "pack:mcpb": "npx -y @anthropic-ai/mcpb@2.1.2 pack . notebooklm-curator.mcpb"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -38,5 +46,10 @@
     "claude",
     "playwright",
     "browser-automation"
-  ]
+  ],
+  "homepage": "https://github.com/furkancakmakcreative/notebooklm-curator#readme",
+  "bugs": {
+    "url": "https://github.com/furkancakmakcreative/notebooklm-curator/issues"
+  },
+  "author": "Furkan Çakmak (https://github.com/furkancakmakcreative)"
 }

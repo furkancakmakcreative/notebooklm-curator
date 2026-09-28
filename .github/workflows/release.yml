@@ -1,0 +1,54 @@
+name: Release
+
+# Push a tag like v0.3.0 to publish a GitHub Release with the one-click
+# Claude Desktop extension (notebooklm-curator.mcpb) attached.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check that the tag matches package.json and manifest.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          man="$(node -p "require('./manifest.json').version")"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$man" ]; then
+            echo "Tag $tag, package.json $pkg and manifest.json $man must match." >&2
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm test
+      - name: Build the extension with production dependencies only
+        run: |
+          rm -rf node_modules
+          npm ci --omit=dev --omit=optional
+          npx -y @anthropic-ai/mcpb@2.1.2 validate manifest.json
+          npx -y @anthropic-ai/mcpb@2.1.2 pack . notebooklm-curator.mcpb
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[?" v "\\]?([ ]|$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" notebooklm-curator.mcpb \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.3.schema.json",
+  "manifest_version": "0.3",
+  "name": "notebooklm-curator",
+  "display_name": "NotebookLM Curator",
+  "version": "0.3.0",
+  "description": "Keeps your NotebookLM (Gemini Notebook) library fresh: adds new videos from YouTube channels you follow, flags stale sources, removes nothing without your approval.",
+  "long_description": "NotebookLM Curator lets Claude manage your NotebookLM (now Gemini Notebook) notebooks through a Chrome window on your own computer.\n\n- Follow a YouTube channel or playlist and get its new videos added to a notebook.\n- Audit a notebook: every source gets a shelf life by category (news, tactics, tools, tutorials, principles) and stale ones are flagged.\n- Remove sources, only after you approve each title.\n- List notebooks and sources, create and rename notebooks, add links, ask questions.\n\nRequires Google Chrome on Windows or macOS. On first use, ask Claude to set it up: it opens Chrome once so you can sign in to Google. A YouTube API key is optional and only needed for publish dates in audits.\n\nNot affiliated with Google or Anthropic.",
+  "author": {
+    "name": "Furkan Çakmak",
+    "url": "https://github.com/furkancakmakcreative"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/furkancakmakcreative/notebooklm-curator"
+  },
+  "homepage": "https://github.com/furkancakmakcreative/notebooklm-curator",
+  "documentation": "https://github.com/furkancakmakcreative/notebooklm-curator#readme",
+  "support": "https://github.com/furkancakmakcreative/notebooklm-curator/issues",
+  "icon": "docs/icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "src/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/src/index.js"],
+      "env": {
+        "YOUTUBE_API_KEY": "${user_config.youtube_api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "nlm_setup", "description": "Checks what is ready and explains the next setup step." },
+    { "name": "nlm_auth", "description": "Opens Chrome once so you can sign in to Google." },
+    { "name": "nlm_list_notebooks", "description": "Lists your notebooks." },
+    { "name": "nlm_list_sources", "description": "Lists the sources in a notebook." },
+    { "name": "nlm_audit", "description": "Flags stale sources by shelf life. Deletes nothing." },
+    { "name": "nlm_remove_source", "description": "Removes a source you approved by title." },
+    { "name": "nlm_create_notebook", "description": "Creates a notebook." },
+    { "name": "nlm_rename_notebook", "description": "Renames a notebook." },
+    { "name": "nlm_add_source", "description": "Adds a web page or YouTube link as a source." },
+    { "name": "nlm_ask", "description": "Asks a notebook a question." },
+    { "name": "nlm_watch_source", "description": "Follows a YouTube channel or playlist for a notebook." },
+    { "name": "nlm_manage_watches", "description": "Lists, pauses, resumes, updates or removes watches." },
+    { "name": "nlm_sync_watches", "description": "Checks watched channels for new videos now." },
+    { "name": "nlm_list_candidates", "description": "Lists new videos waiting for review." },
+    { "name": "nlm_approve_candidates", "description": "Adds the new videos you approved." }
+  ],
+  "keywords": ["notebooklm", "gemini notebook", "youtube", "research", "sources", "mcp"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtimes": { "node": ">=20.0.0" }
+  },
+  "user_config": {
+    "youtube_api_key": {
+      "type": "string",
+      "title": "YouTube API key (optional)",
+      "description": "Leave empty to start. Only needed to look up publish dates when auditing a notebook. The README explains how to get a free key.",
+      "required": false,
+      "sensitive": true
+    }
+  }
+}

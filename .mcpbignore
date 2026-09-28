@@ -1,0 +1,10 @@
+.git/
+.github/
+test/
+docs/*
+!docs/icon.png
+.env
+.env.*
+*.log
+*.mcpb
+manifest.json.bak

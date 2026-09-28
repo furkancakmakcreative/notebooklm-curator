@@ -11,3 +11,4 @@ test-*.mjs
 diag-*.mjs
 diag-*.txt
 *-final-sources.json
+*.mcpb
