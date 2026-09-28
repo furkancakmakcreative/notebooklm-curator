@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+<title id="title">notebooklm-curator</title>
+<desc id="desc">App icon: three source rows, the fresh one marked green, the stale one struck through.</desc>
+<defs></defs>
+<rect x="3" y="3" width="506" height="506" rx="109" fill="#050505" stroke="#262928" stroke-width="6"/>
+<circle cx="127" cy="164" r="27" fill="#0B8F63"/>
+<rect x="182" y="139" width="230" height="50" rx="25" fill="#F5F7F6"/>
+<circle cx="127" cy="256" r="27" fill="#8B918E"/>
+<rect x="182" y="231" width="158" height="50" rx="25" fill="#F5F7F6"/>
+<circle cx="127" cy="348" r="27" fill="#3A3E3C"/>
+<rect x="182" y="323" width="210" height="50" rx="25" fill="#3A3E3C"/>
+<path d="M94 348H418" stroke="#F5F7F6" stroke-width="16" stroke-linecap="round"/>
+</svg>
