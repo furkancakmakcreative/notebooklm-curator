@@ -29,11 +29,20 @@ Gerekenler: **Google Chrome** (bildiğimiz masaüstü tarayıcı) ve NotebookLM 
 
 ### Claude Code: tek komut
 
-[Node.js](https://nodejs.org) 20 veya üstü gerekir. Terminale yapıştır:
+[Node.js](https://nodejs.org) 20 veya üstü ve Git gerekir. Terminale yapıştır:
 
 ```bash
 claude mcp add --scope user notebooklm-curator -- npx -y github:furkancakmakcreative/notebooklm-curator
 ```
+
+Windows'ta (PowerShell veya Komut İstemi):
+
+```bash
+claude mcp add --scope user notebooklm-curator -- cmd /c npx -y github:furkancakmakcreative/notebooklm-curator
+```
+
+İlk açılışta araç indirildiği için yarım dakika sürebilir. Claude Code "failed" gösterirse `/mcp`
+yazıp yeniden bağla.
 
 ### Sonra, hangisini kullanıyorsan
 
@@ -59,11 +68,13 @@ dersin. Sonrasında her şey arka planda çalışır.
 
 ## YouTube API anahtarı (isteğe bağlı)
 
-Kanal ve oynatma listesi takibi anahtar **olmadan** çalışır: araç YouTube'un herkese açık akışını
-okur, bu akış her kanalın en yeni 15 videosunu gösterir. Birkaç günde bir kontrol için bu yeterli.
+Kanal takibi anahtar **olmadan** çalışır: araç YouTube'un herkese açık akışını okur, bu akış her
+kanalın en yeni 15 videosunu gösterir. Birkaç günde bir kontrol için bu yeterli; iki kontrol arasında
+15'ten fazla video çıkarsa sana söyler.
 
-Anahtar iki şey ekler: **denetimde yayın tarihleri** (NotebookLM bir videonun linkini göstermediği
-için tarih başlıktan aranır) ve kanal ve listelerde **tüm geçmiş**. Ücretsizdir, yaklaşık beş dakika sürer:
+Anahtar üç şey ekler: **denetimde yayın tarihleri** (NotebookLM bir videonun linkini göstermediği
+için tarih başlıktan aranır), kanallarda **tüm geçmiş** ve **15 videodan uzun oynatma listeleri**
+(anahtarsız yalnızca listenin ilk 15 videosu görünür). Ücretsizdir, yaklaşık beş dakika sürer:
 
 1. [Google Cloud Console](https://console.cloud.google.com/)'u aç, isterse bir proje oluştur.
 2. **APIs & Services → Library**, **YouTube Data API v3** ara, **Enable** de.
@@ -72,7 +83,8 @@ için tarih başlıktan aranır) ve kanal ve listelerde **tüm geçmiş**. Ücre
    **YouTube Data API v3** işaretle ve kaydet. Kısıtlanmış anahtar sadece herkese açık YouTube verisini okuyabilir.
 5. Claude Desktop: **Settings → Extensions** altında eklentinin ayarlarını aç, anahtarı yapıştır.
    Claude Code: `claude mcp remove notebooklm-curator` çalıştır, sonra kurulum komutunu
-   `--scope user` kısmından hemen sonra `-e YOUTUBE_API_KEY=anahtarin` ekleyerek tekrar çalıştır.
+   `notebooklm-curator` kelimesinden hemen sonra (`--` işaretinden önce) `-e YOUTUBE_API_KEY=anahtarin`
+   ekleyerek tekrar çalıştır.
 
 Anahtar senin bilgisayarında kalır, yalnızca `googleapis.com`'a gönderilir.
 
@@ -98,7 +110,7 @@ Kategori başlıktan tahmin edilir (İngilizce ve Türkçe anahtar kelimeler). H
 
 - **Onayın olmadan hiçbir şey silinmez.** Silme aracı açık onay (`confirm: true`) olmadan çalışmaz ve
   Claude'a her başlığı tek tek sorması söylenir. Denetim salt okunurdur.
-- **Kanal takibi eski videoları içeri almaz**, sen belirli sayıda yeni video istemedikçe (en fazla 50).
+- **Kanal veya liste takibi mevcut videoları içeri almaz**, sen belirli sayıda yeni video istemedikçe (en fazla 50).
   Yeni videolar varsayılan olarak onayını bekler. Tam otomatik mod var; açmak ayrıca onay ister.
 - **Senin bilgisayarında çalışır**, yalnızca bu aracın kullandığı ayrı bir Chrome profilinde. Şifren
   saklanmaz, sadece o profilin Google oturumu saklanır. Ana hesabın yerine araştırma için ayırdığın bir

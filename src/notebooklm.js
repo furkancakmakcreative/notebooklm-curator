@@ -295,6 +295,16 @@ export async function removeSource(page, title, occurrence) {
       };
 }
 
+/** Give a modal that opens by itself a moment to attach, then close it. */
+async function settleOverlays(page, waitMs = 3500) {
+  await page
+    .locator(SEL.overlayBackdrop)
+    .first()
+    .waitFor({ state: 'attached', timeout: waitMs })
+    .catch(() => {});
+  await closeOverlays(page);
+}
+
 /**
  * Create a new (blank) notebook and optionally rename it.
  * The home page's "create-new-button" navigates straight to a fresh
@@ -308,46 +318,61 @@ export async function createNotebook(page, title) {
   await page.locator('.create-new-button').first().click();
   await page.waitForURL(/\/notebook\/[0-9a-f-]{36}/, { timeout: 30000 });
   const id = notebookIdFromUrl(page.url());
-  await page
-    .locator(`${SEL.titleInput}, ${SEL.overlayBackdrop}`)
-    .first()
-    .waitFor({ state: 'attached', timeout: 15000 })
-    .catch(() => {});
-  await page.waitForTimeout(1500); // the modal animates in after the shell
+  await page.locator(SEL.titleInput).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
   if (!title) return { id, url: page.url() };
   const renamed = await renameNotebook(page, title);
-  return { id, url: page.url(), title, renamed: renamed.renamed };
+  return { id, url: page.url(), ...renamed };
 }
 
 /**
- * Rename the currently open notebook via its inline title input, then read
- * the field back so a silent no-op is reported instead of claimed.
+ * Rename the currently open notebook via its inline title input.
+ * Success is checked after a reload, so a rename NotebookLM did not keep
+ * is reported as renamed:false instead of claimed.
  */
 export async function renameNotebook(page, title) {
-  await closeOverlays(page);
+  // An empty notebook opens the add-source modal a moment after load; its
+  // focus trap would otherwise take the Enter meant for the title field.
+  await settleOverlays(page);
   const input = page.locator(SEL.titleInput).first();
   await input.click();
   await input.fill(title);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(800);
-  const current = await input.inputValue().catch(() => null);
+  await input.press('Enter');
+  await page.waitForTimeout(1500);
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await dismissWelcome(page);
+  const reloaded = page.locator(SEL.titleInput).first();
+  await reloaded.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+  const current = await reloaded.inputValue().catch(() => null);
+  await settleOverlays(page, 1500);
   return current === title
     ? { title, renamed: true }
-    : { title, renamed: false, reason: 'the title field did not keep the new name' };
+    : { title, renamed: false, reason: `the title is "${current ?? 'unreadable'}" after reloading` };
 }
 
 /**
  * Add a URL (web page or YouTube video) as a new source.
  *
  * Flow verified live on 2026-09-18: open the add-source modal (a new
- * notebook already has it open), pick the "Websites" option, type the URL
- * into the modal's field, press Enter, then wait for the source list to
+ * notebook opens it by itself), pick the "Websites" option, type the URL
+ * into the modal's own field, press Enter, then wait for the source list to
  * grow. NotebookLM imports in the background, so success is confirmed by
  * the source count rather than by the click.
+ *
+ * `submitted` tells the caller whether the URL was actually sent: a
+ * submitted add that was not confirmed may still land later, so it must not
+ * be blindly retried.
  */
-export async function addSource(page, url, { timeoutMs = 60000 } = {}) {
+export async function addSource(page, url, { timeoutMs = 35000 } = {}) {
   const before = (await listSources(page)).length;
+  const notAdded = (reason) => ({ added: false, submitted: false, url, before, after: before, reason });
 
+  // An empty notebook opens the modal on its own shortly after loading.
+  await page
+    .locator(SEL.overlayBackdrop)
+    .first()
+    .waitFor({ state: 'attached', timeout: before === 0 ? 3500 : 500 })
+    .catch(() => {});
   if (!(await page.locator(SEL.overlayBackdrop).count())) {
     await page.locator(SEL.addSourceButton).first().click({ force: true });
     await page
@@ -355,23 +380,35 @@ export async function addSource(page, url, { timeoutMs = 60000 } = {}) {
       .first()
       .waitFor({ state: 'attached', timeout: 10000 })
       .catch(() => {});
-    await page.waitForTimeout(1500);
+  }
+  if (!(await page.locator(SEL.overlayBackdrop).count())) {
+    return notAdded('the add-source window did not open');
   }
 
-  const websites = page.getByText(/^\s*(Web siteleri|Web sitesi|Websites?)\s*$/i).first();
-  if (await websites.count()) {
-    await websites.click({ force: true });
-    await page.waitForTimeout(1500);
+  const websites = page
+    .locator(SEL.overlayContainer)
+    .getByText(/^\s*(Web siteleri|Web sitesi|Websites?)\s*$/i)
+    .first();
+  // Without this option the modal's only field is its web search box, and
+  // Enter would start a search instead of adding the link.
+  if (!(await websites.waitFor({ state: 'visible', timeout: 5000 }).then(() => true, () => false))) {
+    await closeOverlays(page);
+    return notAdded('the "Websites" option was not found in the add-source window');
   }
+  await websites.click({ force: true });
+  await page.waitForTimeout(1500);
 
-  // Prefer the field inside the modal. Falling back to the whole page could
-  // type the URL into the chat box instead, so only do it when no modal is up.
-  const modal = page.locator(SEL.overlayContainer);
-  const inModal = modal.locator(SEL.sourceUrlField);
-  const field = (await inModal.count()) ? inModal.last() : page.locator(SEL.sourceUrlField).last();
+  // Only ever type into the modal's own field. A page-wide lookup could hit
+  // the chat box, and Enter would send the URL as a question.
+  const fields = page.locator(SEL.overlayContainer).locator(SEL.sourceUrlField);
+  if (!(await fields.count())) {
+    await closeOverlays(page);
+    return notAdded('no link field was found in the add-source window');
+  }
+  const field = fields.last();
   await field.fill(url);
   await page.waitForTimeout(800);
-  await page.keyboard.press('Enter');
+  await field.press('Enter');
 
   let after = before;
   const grew = await waitUntil(
@@ -384,14 +421,15 @@ export async function addSource(page, url, { timeoutMs = 60000 } = {}) {
   await closeOverlays(page);
 
   return grew
-    ? { added: true, url, before, after }
+    ? { added: true, submitted: true, url, before, after }
     : {
         added: false,
+        submitted: true,
         url,
         before,
         after,
         reason:
-          'the source list did not grow in time; NotebookLM may have rejected the URL (private, very new or uncaptioned video) or still be importing it',
+          'the link was submitted but the source list did not grow in time; NotebookLM may still be importing it, or rejected it (private, very new or uncaptioned video). Check the notebook before adding it again.',
       };
 }
 
@@ -435,15 +473,8 @@ async function askOnce(page, question, opts) {
   const box = page.locator('textarea, [contenteditable="true"]').last();
   // The query box stays disabled while a notebook is still loading or a
   // previous answer is streaming; typing into it then silently does nothing.
-  await page
-    .waitForFunction(
-      () => {
-        const el = document.querySelector('textarea[aria-label="Sorgu kutusu"], textarea[aria-label="Query box"], [contenteditable="true"]');
-        return el && !el.disabled;
-      },
-      { timeout: 30000 },
-    )
-    .catch(() => {});
+  // Checked on the box itself so it works in any interface language.
+  await waitUntil(() => box.isEnabled().catch(() => false), { timeoutMs: 30000, intervalMs: 500 });
   await box.click();
   await box.fill(question);
   await page.keyboard.press('Enter');

@@ -138,13 +138,31 @@ test('feed discovery stops at the cursor and never reports truncation', async ()
   assert.equal(found.truncated, false);
   assert.equal(found.quotaUnits, 0);
 
+  // Cursor video deleted: only videos after the last successful check count,
+  // never videos from before the watch existed.
   const lost = await discoverWatch(
-    { ...watch, cursorVideoId: 'gone0000000' },
+    {
+      ...watch,
+      cursorVideoId: 'gone0000000',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      lastSuccessAt: '2026-09-18T12:00:00.000Z',
+    },
     { fetchText, useFeeds: true },
   );
-  assert.equal(lost.items.length, 4);
+  assert.deepEqual(lost.items.map((item) => item.videoId), ['newest00001']);
   assert.equal(lost.cursorFound, false);
   assert.equal(lost.truncated, false);
+  assert.equal(lost.warning, null, 'a short feed cannot hide a gap');
+
+  const neverSynced = await discoverWatch(
+    { ...watch, cursorVideoId: 'gone0000000', createdAt: '2026-09-12T00:00:00.000Z', lastSuccessAt: null },
+    { fetchText, useFeeds: true },
+  );
+  assert.deepEqual(neverSynced.items.map((item) => item.videoId), ['newest00001', 'middle00002']);
+
+  const noTimestamps = await discoverWatch({ ...watch, cursorVideoId: 'gone0000000' }, { fetchText, useFeeds: true });
+  assert.deepEqual(noTimestamps.items, []);
+  assert.match(noTimestamps.warning, /nothing was queued/);
 
   const baseline = await discoverWatch(watch, { fetchText, useFeeds: true, untilVideoId: null });
   assert.equal(baseline.items.length, 4);
@@ -160,4 +178,18 @@ test('an API key or an injected API request keeps the Data API path', async () =
   assert.equal(apiCalls, 1);
   assert.equal(resolved.uploadsPlaylistId, 'UUx');
   assert.equal(resolved.via, undefined);
+});
+
+test('a full feed newer than the last check warns that uploads may have been missed', async () => {
+  const entries = Array.from({ length: 15 }, (_, i) =>
+    entry(`burst${String(i).padStart(6, '0')}`, `Burst ${i}`, new Date(Date.parse('2026-09-20T00:00:00Z') - i * 3600e3).toISOString()),
+  ).join('');
+  const feed = FEED.replace(/<entry>[\s\S]*<\/entry>/, entries);
+  const { fetchText } = stubFetch({ [`channel_id=${CHANNEL}`]: feed });
+  const found = await discoverWatch(
+    { kind: 'youtube-channel', canonicalId: CHANNEL, cursorVideoId: 'old00000000', createdAt: '2026-09-01T00:00:00Z', lastSuccessAt: '2026-09-10T00:00:00Z' },
+    { fetchText, useFeeds: true },
+  );
+  assert.equal(found.items.length, 15);
+  assert.match(found.warning, /more than 15 videos/);
 });

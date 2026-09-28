@@ -29,11 +29,20 @@ You need **Google Chrome** (the normal desktop browser) and a Google account tha
 
 ### Claude Code: one command
 
-Needs [Node.js](https://nodejs.org) 20 or newer. Paste into a terminal:
+Needs [Node.js](https://nodejs.org) 20 or newer and Git. Paste into a terminal:
 
 ```bash
 claude mcp add --scope user notebooklm-curator -- npx -y github:furkancakmakcreative/notebooklm-curator
 ```
+
+On Windows (PowerShell or Command Prompt):
+
+```bash
+claude mcp add --scope user notebooklm-curator -- cmd /c npx -y github:furkancakmakcreative/notebooklm-curator
+```
+
+The first start downloads the tool and can take half a minute. If Claude Code shows it as failed,
+type `/mcp` and reconnect it.
 
 ### Then, in either app
 
@@ -68,11 +77,13 @@ After that everything runs in the background.
 
 ## YouTube API key (optional)
 
-Following channels and playlists works **without** a key: the tool reads YouTube's public feed,
-which shows each channel's newest 15 videos. That is plenty when it checks every day or two.
+Following channels works **without** a key: the tool reads YouTube's public feed, which shows each
+channel's newest 15 videos. That is plenty when it checks every day or two; if more than 15 come out
+between two checks, it tells you.
 
-A key adds two things: **publish dates in audits** (NotebookLM does not show a video's link, so the
-date has to be looked up by title) and **full history** for channels and playlists.
+A key adds three things: **publish dates in audits** (NotebookLM does not show a video's link, so the
+date has to be looked up by title), **full history** for channels, and **playlists longer than 15
+videos** (without a key only a playlist's first 15 entries are visible).
 It is free and takes about five minutes:
 
 1. Open [Google Cloud Console](https://console.cloud.google.com/) and create a project if asked.
@@ -82,7 +93,7 @@ It is free and takes about five minutes:
    **YouTube Data API v3**, and save. A restricted key can only read public YouTube data.
 5. Claude Desktop: open the extension's settings under **Settings → Extensions** and paste the key.
    Claude Code: `claude mcp remove notebooklm-curator`, then run the install command again with
-   `-e YOUTUBE_API_KEY=your_key` added right after `--scope user`.
+   `-e YOUTUBE_API_KEY=your_key` added right after `notebooklm-curator` (before the `--`).
 
 The key stays on your computer and is only sent to `googleapis.com`.
 
@@ -109,8 +120,8 @@ date can't be found. A date is never guessed.
 
 - **Nothing is deleted without approval.** `nlm_remove_source` refuses to run unless the call carries
   `confirm: true`, and Claude is told to ask you about each exact title. The audit is read-only.
-- **Following a channel never imports its archive** unless you ask for a number of recent videos
-  (at most 50). New videos wait for your review by default. A fully automatic mode exists; turning
+- **Following a channel or playlist never imports what is already there** unless you ask for a number
+  of recent videos (at most 50). New videos wait for your review by default. A fully automatic mode exists; turning
   it on needs an explicit confirmation.
 - **It runs on your computer**, in a separate Chrome profile that only this tool uses. Your password is
   never stored, only that profile's Google session. Consider signing in with a Google account you keep
@@ -173,8 +184,8 @@ Environment variables (all optional, see `.env.example`): `YOUTUBE_API_KEY`, `NL
 | `nlm_list_notebooks`, `nlm_list_sources` | Read notebooks and sources. |
 | `nlm_audit` | Shelf-life audit and duplicates, read-only. Options: `includeFresh`, `categories`, `knownIds`, `searchBudget`. |
 | `nlm_remove_source` | Delete by exact title. Requires `confirm: true`; `occurrence` picks one of several same-title sources. |
-| `nlm_create_notebook`, `nlm_rename_notebook` | Create and rename. Renames are read back and verified. |
-| `nlm_add_source` | Add a URL. Success is confirmed by the source list growing. |
+| `nlm_create_notebook`, `nlm_rename_notebook` | Create and rename. Renames are checked again after a reload. |
+| `nlm_add_source` | Add a URL. Success is confirmed by the source list growing; `submitted: true` without `added` means check the notebook before retrying. |
 | `nlm_ask` | Ask a question. `incomplete: true` when the answer may be partial. |
 | `nlm_watch_source`, `nlm_manage_watches` | Follow a channel or playlist; list, pause, resume, update, remove. |
 | `nlm_sync_watches`, `nlm_list_candidates`, `nlm_approve_candidates` | Discover, review and add new videos. |
@@ -189,6 +200,7 @@ own; resolve it with `uncertainAction: "mark-added"` or `"retry-add"`.
 ### Scheduling
 
 ```bash
+cp .env.example .env   # once; it can stay empty
 npm run sync -- --account default
 ```
 

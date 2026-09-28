@@ -27,6 +27,11 @@ async function loadChromium() {
   return _chromium;
 }
 
+/** Test hook: swap in a fake launcher. Not part of the public API. */
+export function _setChromiumForTests(chromium) {
+  _chromium = chromium;
+}
+
 /**
  * This tool intentionally launches real Google Chrome (channel: 'chrome'),
  * not a downloaded/bundled Chromium build — patchright's anti-detection
@@ -94,30 +99,38 @@ export function profileDir(account = 'default') {
  * @param {string}  opts.account   profile slug, for multiple Google accounts
  */
 export async function getContext({ headless = true, account = 'default' } = {}) {
-  const existing = _contexts.get(account);
-  if (existing?.pending) {
-    const ctx = await existing.pending;
-    // A caller that needs a visible window (sign-in) must not be handed a
-    // background browser that another call launched first. That is how
-    // "the window opened" could be reported while nothing appeared.
-    if (!headless && ctx.__headless) {
-      await closeAccount(account);
-      return getContext({ headless, account });
+  // Each pass either returns a usable context or waits for a state change
+  // (a launch or a close finishing) and looks again.
+  for (;;) {
+    const entry = _contexts.get(account);
+    if (entry?.closing) {
+      await entry.closing;
+      continue;
     }
-    return ctx;
-  }
-  if (existing?.ctx && !existing.ctx.__closed) {
-    if (!headless && existing.ctx.__headless) {
-      await closeAccount(account);
-    } else {
-      return existing.ctx;
+    const ctx = entry?.pending ? await entry.pending : entry?.ctx;
+    if (ctx && !ctx.__closed) {
+      // A caller that needs a visible window (sign-in) must not be handed a
+      // background browser that another call launched first. That is how
+      // "the window opened" could be reported while nothing appeared.
+      if (!headless && ctx.__headless) {
+        await closeAccount(account);
+        continue;
+      }
+      return ctx;
     }
+    if (entry && _contexts.get(account) === entry) _contexts.delete(account);
+    if (!_contexts.get(account)) break;
   }
 
   // Two overlapping tool calls at cold start must not both launch a Chrome
-  // process against the same profile dir — stash the in-flight promise so a
+  // process against the same profile dir: stash the in-flight promise so a
   // concurrent caller awaits the same launch instead of racing it.
-  const pending = (async () => {
+  const slot = {};
+  slot.pending = (async () => {
+    // Yield first so a synchronous throw below still leaves this slot in
+    // place for the catch block to clear (otherwise a missing Chrome would
+    // poison the account until restart).
+    await null;
     try {
       if (!process.env.NLM_BROWSER_CHANNEL) assertChromeInstalled();
       const chromium = await loadChromium();
@@ -135,20 +148,19 @@ export async function getContext({ headless = true, account = 'default' } = {}) 
         // Only forget this context; a relaunch may already own the slot.
         if (_contexts.get(account)?.ctx === ctx) _contexts.delete(account);
       });
-      _contexts.set(account, { ctx });
+      if (_contexts.get(account) === slot) _contexts.set(account, { ctx });
       return ctx;
     } catch (err) {
       // A transient launch failure (profile lock contention, brief OOM, ...)
-      // must not permanently poison this account — clear the entry so the
-      // next call retries the launch instead of forever awaiting this
-      // already-rejected promise.
-      _contexts.delete(account);
+      // must not permanently poison this account: clear the slot so the
+      // next call retries, but only if it is still ours.
+      if (_contexts.get(account) === slot) _contexts.delete(account);
       throw err;
     }
   })();
 
-  _contexts.set(account, { pending });
-  return pending;
+  _contexts.set(account, slot);
+  return slot.pending;
 }
 
 export async function getPage(opts) {
@@ -157,19 +169,30 @@ export async function getPage(opts) {
   return pages.length ? pages[0] : ctx.newPage();
 }
 
-/** Close one account's browser; the next call relaunches it headless. */
+/**
+ * Close one account's browser; the next call relaunches it headless.
+ * While it closes, the slot holds the closing promise so no other caller
+ * launches a second Chrome against the same (still locked) profile.
+ */
 export async function closeAccount(account = 'default') {
   const entry = _contexts.get(account);
-  _contexts.delete(account);
-  const ctx = entry?.ctx || (await entry?.pending?.catch(() => null));
-  if (ctx && !ctx.__closed) await ctx.close().catch(() => {});
+  if (!entry) return;
+  if (entry.closing) return entry.closing;
+  const slot = {};
+  slot.closing = (async () => {
+    const ctx = entry.ctx || (await entry.pending?.catch(() => null));
+    if (ctx && !ctx.__closed) await ctx.close().catch(() => {});
+  })();
+  _contexts.set(account, slot);
+  try {
+    await slot.closing;
+  } finally {
+    if (_contexts.get(account) === slot) _contexts.delete(account);
+  }
 }
 
 export async function closeBrowser() {
-  for (const { ctx } of _contexts.values()) {
-    if (ctx && !ctx.__closed) await ctx.close().catch(() => {});
-  }
-  _contexts.clear();
+  await Promise.all([..._contexts.keys()].map((account) => closeAccount(account)));
 }
 
 const SIGN_IN_URL = /accounts\.google\.com|ServiceLogin|signin/i;

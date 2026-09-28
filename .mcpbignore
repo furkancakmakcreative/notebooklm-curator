@@ -1,10 +1,10 @@
-.git/
-.github/
-test/
-docs/*
-!docs/icon.png
-.env
-.env.*
+# Anchored to the repo root so node_modules/**/test and similar stay in.
+/.git/
+/.github/
+/test/
+/docs/*
+!/docs/icon.png
+/.env
+/.env.*
 *.log
 *.mcpb
-manifest.json.bak

@@ -619,15 +619,25 @@ async function resolveFromFeed(parsed, options) {
   };
 }
 
+/** Slack for feed publish times that settle after a sync already ran. */
+const FEED_CURSOR_SLACK_MS = 6 * 60 * 60 * 1000;
+
 /**
- * Discover from the feed. It only ever shows the newest 15 videos, so a
- * cursor that fell off the end is not treated as truncation (that would
- * block the watch forever); the items are deduplicated downstream anyway.
+ * Discover from the feed. It only ever shows the newest 15 videos.
+ *
+ * Normally everything above the cursor video is new. When the cursor is not
+ * in the feed (the video was deleted or made private, or more than 15 were
+ * uploaded since the last check), only videos published after the last
+ * successful check count as new: otherwise the whole feed, including videos
+ * from before the watch existed, would be queued. If even the oldest feed
+ * item is newer than that point, some uploads may have been missed, and a
+ * warning says so. This is never reported as truncation, which would block
+ * the watch for good.
  */
 async function discoverFromFeed(watch, options) {
   const feed = await readFeed(watch, options);
   const until = options.untilVideoId === undefined ? watch.cursorVideoId : options.untilVideoId;
-  const items = [];
+  let items = [];
   let cursorFound = false;
   for (const item of feed.items) {
     if (until && item.videoId === until) {
@@ -636,6 +646,25 @@ async function discoverFromFeed(watch, options) {
     }
     items.push(item);
   }
+
+  let warning = null;
+  if (until && !cursorFound) {
+    const created = Date.parse(watch.createdAt || '');
+    const lastSuccess = Date.parse(watch.lastSuccessAt || '');
+    let since = Number.isFinite(lastSuccess) ? lastSuccess - FEED_CURSOR_SLACK_MS : created;
+    if (Number.isFinite(created)) since = Math.max(since, created);
+    if (Number.isFinite(since)) {
+      items = items.filter((item) => Date.parse(item.publishedAt || '') > since);
+      const oldest = Math.min(...feed.items.map((item) => Date.parse(item.publishedAt || '')).filter(Number.isFinite));
+      if (feed.items.length >= FEED_LIMIT && oldest > since) {
+        warning = `more than ${FEED_LIMIT} videos may have been published since the last check; without a YouTube API key only the newest ${FEED_LIMIT} are visible`;
+      }
+    } else {
+      items = [];
+      warning = 'the last seen video is no longer in the feed and the watch has no timestamps; nothing was queued';
+    }
+  }
+
   items.sort((a, b) => (Date.parse(b.publishedAt || '') || 0) - (Date.parse(a.publishedAt || '') || 0));
   return {
     playlistId: watch.kind === 'youtube-playlist' ? watch.canonicalId : watch.uploadsPlaylistId || null,
@@ -645,6 +674,7 @@ async function discoverFromFeed(watch, options) {
     pages: 1,
     quotaUnits: 0,
     truncated: false,
+    warning,
     via: 'rss',
     feedLimit: FEED_LIMIT,
   };

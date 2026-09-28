@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
 import {
   addWatch,
@@ -28,7 +29,7 @@ function item(videoId, publishedAt, extra = {}) {
 }
 
 async function harness({ now = Date.parse('2026-08-14T00:00:00.000Z'), discover, sourceCounts = {}, getSourceCount, addSource, addResult, confirmAddResult = true } = {}) {
-  const baseDir = await fs.mkdtemp(`${os.tmpdir()}\\nlm-watches-test-`);
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nlm-watches-test-'));
   let clock = now;
   let nextId = 0;
   const calls = [];
@@ -518,4 +519,34 @@ test('add adapters must confirm added:true and live claims renew until add compl
   assert.equal(addCalls, 1);
   assert.equal((await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].status, 'retry');
   void clock;
+});
+
+test('a new playlist watch records the existing playlist so the first sync queues only new videos', async () => {
+  let items = [item('p2', '2026-08-12T00:00:00Z'), item('p1', '2026-08-11T00:00:00Z'), item('p0', '2026-08-10T00:00:00Z')];
+  const h = await harness({ discover: async () => ({ newestVideoId: items[0].videoId, items }) });
+  const created = await addWatch({ source: 'https://www.youtube.com/playlist?list=PLseen', notebookId: 'n1' }, h.deps);
+  assert.equal(created.watch.seenVideoCount, 3);
+  assert.equal(created.watch.seenVideoIds, undefined, 'the ID list stays out of tool output');
+  assert.equal(h.calls[0].options.maxPages, 10, 'the baseline scans the whole playlist');
+
+  items = [item('p3', '2026-08-13T00:00:00Z'), ...items];
+  const result = await syncWatches({ watchId: created.watch.id, force: true }, h.deps);
+  assert.equal(result.discovered, 1);
+  const candidates = await listCandidates({ watchId: created.watch.id }, h.deps);
+  assert.deepEqual(candidates.candidates.map((candidate) => candidate.videoId), ['p3']);
+});
+
+test('a link that was submitted but not confirmed becomes uncertain instead of being retried', async () => {
+  const h = await harness({
+    addSource: async () => {
+      const error = new Error('the link was submitted but the source list did not grow in time');
+      error.uncertain = true;
+      throw error;
+    },
+    discover: async () => ({ newestVideoId: 'late', items: [item('late', '2026-08-01T00:00:00Z')] }),
+  });
+  const created = await addWatch({ source: 'UClate', notebookId: 'n1', mode: 'auto', confirmAuto: true, minAutoAddAgeHours: 0, initialItems: 1 }, h.deps);
+  const result = await syncWatches({ watchId: created.watch.id, force: true }, h.deps);
+  assert.equal(result.retries, 0);
+  assert.equal((await listCandidates({ watchId: created.watch.id }, h.deps)).candidates[0].status, 'uncertain');
 });

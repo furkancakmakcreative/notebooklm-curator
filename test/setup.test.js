@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { INSTRUCTIONS, TOOLS, VERSION, isMainModule, setupReport } from '../src/index.js';
+import { INSTRUCTIONS, TOOLS, VERSION, isMainModule, sanitizeError, setupReport } from '../src/index.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
@@ -57,6 +57,8 @@ test('setup lists missing Chrome and a signed-out profile as plain next steps', 
 test('setup can skip the sign-in check and reports sign-in errors without throwing', async () => {
   const skipped = await setupReport({ checkSignIn: false }, deps({ checkSignIn: async () => { throw new Error('should not run'); } }));
   assert.equal(skipped.checks.googleSignIn, 'not-checked');
+  assert.equal(skipped.ready, false, 'an unchecked sign-in is not reported as ready');
+  assert.match(skipped.nextSteps[0], /not checked/);
 
   const failed = await setupReport({}, deps({ checkSignIn: async () => { throw new Error(`boom at ${os.homedir()}/x`); } }));
   assert.equal(failed.checks.googleSignIn, 'error');
@@ -88,4 +90,13 @@ test('the Claude Desktop manifest matches package.json and lists every tool', ()
     TOOLS.map((tool) => tool.name).sort(),
   );
   assert.equal(manifest.user_config.youtube_api_key.required, false);
+});
+
+test('error sanitizing keeps web links intact while masking local paths', () => {
+  const message = sanitizeError(
+    `Chrome missing: install it from https://www.google.com/chrome/ (looked in ${os.homedir()}/Apps and C:\\Program Files\\Google)`,
+  );
+  assert.match(message, /https:\/\/www\.google\.com\/chrome\//);
+  assert.ok(!message.includes(os.homedir()));
+  assert.ok(!message.includes('Program'));
 });

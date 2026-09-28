@@ -39,8 +39,17 @@ all call it first.
 `addSource()` opens the add-source modal (a new notebook already has it open), picks the Websites
 option, types the URL into the modal's own field and presses Enter. NotebookLM imports in the
 background, so success is confirmed by the source list growing within 60 seconds, not by the click.
-The URL field is looked up inside the overlay container first; a page-wide lookup could type the URL
-into the chat box instead.
+The URL is only ever typed into a field inside the overlay container; a page-wide lookup could hit the
+chat box, and Enter would send the link as a question. If the Websites option or the field is missing,
+nothing is typed and `submitted: false` is returned. Once the link was sent, a missing confirmation is
+`submitted: true`: watches mark such a candidate `uncertain` instead of retrying, because NotebookLM may
+still import it and a retry would create a duplicate.
+
+## Renaming
+
+The new title is typed, Enter is sent to the title field itself (a modal's focus trap would otherwise
+take it), and the page is reloaded before the title is read back. Reading the field without a reload
+would only return the text just typed.
 
 ## How `nlm_ask` knows the answer is done
 
@@ -64,6 +73,8 @@ NotebookLM's occasional refusal to answer. That is cheap insurance, not a confir
 
 `nlm_auth` opens a visible Chrome window. If a background (headless) browser for the same profile is
 already running, it is closed first; otherwise the tool would report a window that never appeared.
+While a browser closes, its slot holds the closing promise, so a background check that arrives at that
+moment waits instead of launching a second Chrome against the still-locked profile.
 While the window is on a Google sign-in page, `nlm_auth` never reloads it: reloading under someone who
 is typing a password throws the sign-in away. Once signed in, the window is closed and later calls run
 headless.
@@ -72,8 +83,13 @@ headless.
 
 Without `YOUTUBE_API_KEY`, watches use `https://www.youtube.com/feeds/videos.xml?channel_id=...` or
 `?playlist_id=...`. The feed lists the newest 15 videos. An `@handle` is resolved to its `UC...` channel
-ID from the public channel page. A cursor that fell off the 15-item feed is not treated as truncation
-(that would block the watch forever); new items are deduplicated by video ID anyway. The channel's
+ID from the public channel page. When the last seen video is no longer in the feed (deleted, made
+private, or more than 15 uploads since the last check), only videos published after the last successful
+check (minus six hours of slack, never before the watch was created) count as new, and a warning is
+returned when the whole feed is newer than that point. This is not reported as truncation, which would
+block the watch forever. Playlist feeds list a playlist's first 15 entries in playlist order, so keyless
+playlist watches only see additions within those. A new playlist watch stores the IDs already in the
+playlist (`seenVideoIds`) so the first full rescan does not queue them. The channel's
 uploads playlist ID (`UU...`) is still stored, so adding a key later moves the watch to the Data API
 without changes.
 

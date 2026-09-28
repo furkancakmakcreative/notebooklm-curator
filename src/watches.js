@@ -131,10 +131,17 @@ async function defaultNotebookApi() {
         async addSource({ account, notebookId, url }) {
           const page = await browser.getPage({ account });
           await notebooklm.gotoNotebook(page, notebookId);
-          const { added, before, after, reason } = await notebooklm.addSource(page, url);
-          if (!added) throw new Error(reason || 'NotebookLM did not confirm the new source');
+          const { added, submitted, before, after, reason } = await notebooklm.addSource(page, url);
+          if (!added) {
+            const error = new Error(reason || 'NotebookLM did not confirm the new source');
+            // The link was sent; it may still land. Retrying could duplicate it.
+            error.uncertain = submitted === true;
+            throw error;
+          }
           if (after !== before + 1) {
-            throw new Error(`NotebookLM source count did not increase by one (${before} to ${after})`);
+            const error = new Error(`NotebookLM source count did not increase by one (${before} to ${after})`);
+            error.uncertain = true;
+            throw error;
           }
           return { added: true, before, after };
         },
@@ -244,7 +251,9 @@ function comparePublished(a, b) {
 }
 
 function publicWatch(watch) {
-  return { ...watch };
+  // The playlist baseline can hold hundreds of IDs; report only its size.
+  const { seenVideoIds, ...rest } = watch;
+  return Array.isArray(seenVideoIds) ? { ...rest, seenVideoCount: seenVideoIds.length } : rest;
 }
 
 function publicCandidate(candidate) {
@@ -330,8 +339,10 @@ async function persistDiscovery(account, watch, discovery, deps, at) {
   await update(account, deps, (state) => {
     const current = state.watches[watch.id];
     if (!current) throw new Error(`watch not found: ${watch.id}`);
+    const seen = new Set(current.seenVideoIds || []);
     for (const item of ordered) {
       if (!item?.videoId) continue;
+      if (seen.has(item.videoId)) continue;
       if (Object.values(state.candidates).some((candidate) =>
         candidate.watchId === watch.id && candidate.sourceKey === sourceKey(item.videoId))) continue;
       const candidate = {
@@ -568,11 +579,15 @@ async function addClaimedCandidate(account, claimed, deps, atMs, summary) {
     summary.addedCandidateIds.push(claimed.id);
     return true;
   }
+  // A failure after the link was submitted (failure.uncertain) must not be
+  // retried automatically: NotebookLM may still import it, and a retry
+  // would add a duplicate. It waits for an explicit uncertainAction instead.
+  const uncertain = claimed.wasUncertain || failure?.uncertain === true;
   const finished = await finishCandidate(
     account,
     claimed,
     deps,
-    claimed.wasUncertain ? 'uncertain' : 'retry',
+    uncertain ? 'uncertain' : 'retry',
     atMs,
     failure,
   );
@@ -583,7 +598,7 @@ async function addClaimedCandidate(account, claimed, deps, atMs, summary) {
     });
     return false;
   }
-  summary.retries += claimed.wasUncertain ? 0 : 1;
+  summary.retries += uncertain ? 0 : 1;
   summary.candidateErrors.push({ candidateId: claimed.id, error: errorText(failure) });
   return false;
 }
@@ -646,6 +661,7 @@ async function syncOne(account, watch, input, deps) {
       result.error = persisted.warning;
       result.truncated = true;
     }
+    if (discovery.warning) result.warning = discovery.warning;
   } catch (error) {
     result.error = errorText(error);
     await markWatchFailure(account, watch.id, deps, nowMs(deps), error);
@@ -718,9 +734,13 @@ export async function addWatch(input = {}, deps = {}) {
     lastSuccessAt: null,
     lastError: null,
   };
+  // Playlists are rescanned in full on every sync (they can be reordered),
+  // so the baseline records every video already in them; otherwise the
+  // first sync would queue the whole existing playlist as new.
+  const isPlaylist = resolved.kind === 'youtube-playlist';
   const discovery = await youtubeApi(deps).discoverWatch(watch, {
     ...youtubeOptions(deps),
-    maxPages: 1,
+    maxPages: isPlaylist ? (deps.maxPages ?? DEFAULTS.maxPages) : 1,
     untilVideoId: null,
   });
   const currentAt = nowMs(deps);
@@ -739,6 +759,12 @@ export async function addWatch(input = {}, deps = {}) {
       return;
     }
     watch.cursorVideoId = discovery.newestVideoId || null;
+    if (isPlaylist) {
+      const initialIds = new Set(initial.map((item) => item?.videoId));
+      watch.seenVideoIds = (discovery.items || [])
+        .map((item) => item?.videoId)
+        .filter((videoId) => videoId && !initialIds.has(videoId));
+    }
     state.watches[watch.id] = watch;
     for (const item of initial) {
       if (!item?.videoId) continue;
