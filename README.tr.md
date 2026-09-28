@@ -88,6 +88,12 @@ için tarih başlıktan aranır), kanallarda **tüm geçmiş** ve **15 videodan 
 
 Anahtar senin bilgisayarında kalır, yalnızca `googleapis.com`'a gönderilir.
 
+**Anahtarla sorun yaşarsan** Claude'a *NotebookLM Curator kurulumumu kontrol et* de. Anahtarı tek bir
+çağrıyla dener ve sorunu sade dille, çözümüyle birlikte anlatır: yanlış kopyalanmış anahtar, API'nin
+açılmamış olması, anahtarın yanlış API'ye ya da bir web sitesine kısıtlanmış olması veya günlük kotanın
+dolması (Pasifik saatiyle gece yarısı sıfırlanır). Anahtar bozukken kanal takibi kendiliğinden herkese
+açık akışa geçer, denetim de tarihleri atlar; yani hiçbir şey durmaz.
+
 ## Neyin bayat olduğuna nasıl karar verir
 
 Tek bir "40 günden eski" kuralı iki yönde de yanılır: bir model duyurusu üç haftada eskir, tipografi

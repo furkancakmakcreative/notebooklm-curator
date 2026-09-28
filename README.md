@@ -97,6 +97,12 @@ It is free and takes about five minutes:
 
 The key stays on your computer and is only sent to `googleapis.com`.
 
+**If the key misbehaves**, ask Claude to *check my NotebookLM Curator setup*. It tests the key with one
+call and explains the fix in plain words: a mistyped key, the API not enabled, the key restricted to
+the wrong API or to a website, or today's quota used up (it resets at midnight Pacific time). While
+the key is broken, watches quietly switch to the public feed and audits skip dates, so nothing stops
+working.
+
 ## How it decides what is stale
 
 A single "older than 40 days" rule is wrong both ways: a model announcement is outdated in three

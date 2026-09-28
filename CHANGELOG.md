@@ -12,6 +12,10 @@ Made for people who are not developers.
 - **YouTube API key is now optional.** Without it, channel watches read YouTube's public feed (newest
   15 videos, with a warning when more may have been missed), and audits still categorize sources and
   find duplicates. Publish dates, full channel history and playlists longer than 15 videos need a key.
+- **A broken key explains itself.** `nlm_setup` tests a configured key with one call. A mistyped key,
+  a disabled API, a wrong restriction or a used-up quota comes back as a plain explanation with the
+  exact fix, instead of a raw Google error. Watches fall back to the public feed meanwhile, and audits
+  stop at the first failure instead of retrying every title.
 - **Sign-in fixes.** `nlm_auth` no longer reports a window that never opened when a background browser
   held the profile, never reloads the page while someone is signing in, and closes the window once
   signed in. Every other tool now says "run nlm_auth" instead of timing out when signed out.

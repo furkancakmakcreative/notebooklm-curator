@@ -58,9 +58,87 @@ async function call(path, params, key) {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`YouTube API ${res.status}: ${redactKey(body.slice(0, 300))}`);
+    const problem = explainApiError(res.status, body);
+    const error = new Error(
+      problem ? `YouTube API key problem: ${problem.message}` : `YouTube API ${res.status}: ${redactKey(body.slice(0, 300))}`,
+    );
+    if (problem) error.youtubeProblem = problem;
+    throw error;
   }
   return res.json();
+}
+
+const CREDENTIALS = 'Google Cloud Console > APIs & Services > Credentials';
+
+/**
+ * Turn the YouTube Data API's error reasons into something a person who
+ * has never opened Google Cloud can act on. Returns null for errors that
+ * are not about the key itself (a missing channel, a network hiccup).
+ */
+export function explainApiError(status, body) {
+  let reasons = [];
+  try {
+    const error = JSON.parse(body)?.error || {};
+    reasons = [
+      ...(error.errors || []).map((item) => item?.reason),
+      ...(error.details || []).map((item) => item?.reason),
+      error.status,
+    ].filter(Boolean);
+  } catch {
+    // Not JSON: fall through to the status-only checks below.
+  }
+  const has = (...names) => names.some((name) => reasons.includes(name));
+  const text = String(body || '');
+
+  if (has('quotaExceeded', 'dailyLimitExceeded', 'rateLimitExceeded', 'RATE_LIMIT_EXCEEDED') || /quota/i.test(text)) {
+    return {
+      code: 'quota',
+      message: "today's YouTube API quota is used up.",
+      fix: 'Nothing to change. It resets at midnight Pacific time. Until then watches use the public feed and audits skip publish dates.',
+      fallback: true,
+    };
+  }
+  if (has('keyInvalid', 'API_KEY_INVALID', 'badRequest') && /key/i.test(text)) {
+    return {
+      code: 'invalid-key',
+      message: 'the YouTube API key is not valid.',
+      fix: `Copy the key again from ${CREDENTIALS} (it usually starts with "AIza"), or remove it: the key is optional.`,
+      fallback: true,
+    };
+  }
+  if (has('accessNotConfigured', 'SERVICE_DISABLED')) {
+    return {
+      code: 'api-disabled',
+      message: 'YouTube Data API v3 is not turned on for the Google Cloud project this key belongs to.',
+      fix: 'In Google Cloud Console open APIs & Services > Library, search "YouTube Data API v3" and click Enable. It can take a few minutes to apply.',
+      fallback: true,
+    };
+  }
+  if (has('API_KEY_SERVICE_BLOCKED')) {
+    return {
+      code: 'api-blocked',
+      message: 'the key is restricted to other APIs.',
+      fix: `In ${CREDENTIALS}, click the key and under API restrictions tick "YouTube Data API v3", then save.`,
+      fallback: true,
+    };
+  }
+  if (has('API_KEY_HTTP_REFERRER_BLOCKED', 'API_KEY_IP_ADDRESS_BLOCKED', 'API_KEY_ANDROID_APP_BLOCKED', 'API_KEY_IOS_APP_BLOCKED')) {
+    return {
+      code: 'app-restricted',
+      message: 'the key has an application restriction (websites, IP addresses or apps) that blocks this computer.',
+      fix: `In ${CREDENTIALS}, click the key and set Application restrictions to None. Keep the API restriction to YouTube Data API v3.`,
+      fallback: true,
+    };
+  }
+  if (status === 400 && /api key/i.test(text)) {
+    return {
+      code: 'invalid-key',
+      message: 'the YouTube API key was rejected.',
+      fix: `Copy the key again from ${CREDENTIALS}, or remove it: the key is optional.`,
+      fallback: true,
+    };
+  }
+  return null;
 }
 
 function apiOptions(optionsOrKey = {}) {
@@ -152,10 +230,61 @@ function sourceTitle(item) {
 }
 
 /** Resolve a channel to its uploads playlist, or fetch playlist metadata. */
+/**
+ * Check a configured key with the cheapest call there is (videos.list for
+ * one ID, 1 quota unit). Returns {status:'working'|'problem'|'unreachable'}.
+ */
+export async function checkApiKey(options = {}) {
+  const { key } = apiOptions(options);
+  if (!hasApiKey(key)) return { status: 'not-set' };
+  try {
+    await requestFor(apiOptions(options))('videos', { part: 'id', id: 'jNQXAC9IVRw' }, key);
+    return { status: 'working' };
+  } catch (err) {
+    if (err.youtubeProblem) return { status: 'problem', ...publicProblem(err.youtubeProblem) };
+    return { status: 'unreachable', message: redactKey(err?.message || err) };
+  }
+}
+
+/** The part of a key problem that is safe and useful to show. */
+function publicProblem({ code, message, fix }) {
+  return { code, message: `YouTube API key problem: ${message}`, fix };
+}
+
+/**
+ * Run an API call; if the key itself is the problem, fall back to the public
+ * feed so the watch keeps working, and say what to fix.
+ */
+async function withFeedFallback(options, apiCall, feedCall) {
+  try {
+    return await apiCall();
+  } catch (err) {
+    const canFallback = err.youtubeProblem?.fallback && (!options.request || options.fetchText);
+    if (!canFallback) throw err;
+    const result = await feedCall();
+    const problem = publicProblem(err.youtubeProblem);
+    return {
+      ...result,
+      youtubeProblem: problem,
+      warning: [result.warning, `${problem.message} Used the public feed instead. ${problem.fix}`]
+        .filter(Boolean)
+        .join(' '),
+    };
+  }
+}
+
 export async function resolveYouTubeSource(input, options = {}) {
   const parsed = parseYouTubeSource(input);
-  const { key } = apiOptions(options);
   if (usesFeeds(apiOptions(options))) return resolveFromFeed(parsed, apiOptions(options));
+  return withFeedFallback(
+    apiOptions(options),
+    () => resolveFromApi(parsed, options),
+    () => resolveFromFeed(parsed, apiOptions(options)),
+  );
+}
+
+async function resolveFromApi(parsed, options) {
+  const { key } = apiOptions(options);
   const request = requestFor(apiOptions(options));
 
   if (parsed.kind === 'youtube-channel') {
@@ -297,6 +426,14 @@ export async function fetchPlaylistItems(playlistId, options = {}) {
 export async function discoverWatch(watch, options = {}) {
   if (!watch || typeof watch !== 'object') throw new Error('A watch record is required');
   if (usesFeeds(apiOptions(options))) return discoverFromFeed(watch, apiOptions(options));
+  return withFeedFallback(
+    apiOptions(options),
+    () => discoverFromApi(watch, options),
+    () => discoverFromFeed(watch, apiOptions(options)),
+  );
+}
+
+async function discoverFromApi(watch, options) {
   const playlistId = watch.uploadsPlaylistId || watch.canonicalId;
   if (!playlistId) throw new Error('Watch has no playlist ID');
   const fetchOptions = {
@@ -398,7 +535,21 @@ export async function enrich(entries, { key, budget = 60, request } = {}) {
   const results = [];
 
   if (known.length) {
-    const { found, missing } = await datesByIds(known.map((e) => e.videoId), { key, request });
+    let byIds;
+    try {
+      byIds = await datesByIds(known.map((e) => e.videoId), { key, request });
+    } catch (err) {
+      if (!err.youtubeProblem) throw err;
+      return {
+        results: known.map((e) => ({ ...e, resolved: 'error', note: err.message })),
+        youtubeProblem: publicProblem(err.youtubeProblem),
+        searchesSpent: 0,
+        searchCallsSpent: 0,
+        quotaUnitsApprox: 1,
+        quota: { searchCalls: 0, searchRequestUnits: 0, listRequests: 1, listUnits: 1, totalRequestUnitsApprox: 1 },
+      };
+    }
+    const { found, missing } = byIds;
     for (const e of known) {
       const hit = found.get(e.videoId);
       results.push(
@@ -411,6 +562,7 @@ export async function enrich(entries, { key, budget = 60, request } = {}) {
   }
 
   let spent = 0;
+  let youtubeProblem = null;
   for (const e of unknown) {
     if (spent >= budget) {
       results.push({ ...e, resolved: 'skipped', note: 'search budget exhausted' });
@@ -424,6 +576,11 @@ export async function enrich(entries, { key, budget = 60, request } = {}) {
       );
     } catch (err) {
       results.push({ ...e, resolved: 'error', note: String(err.message) });
+      if (err.youtubeProblem) {
+        // Every later call would fail the same way: stop and say why once.
+        youtubeProblem = err.youtubeProblem;
+        break;
+      }
       if (/quota/i.test(err.message)) break; // stop burning a dead quota
     }
   }
@@ -432,6 +589,7 @@ export async function enrich(entries, { key, budget = 60, request } = {}) {
   const totalRequestUnitsApprox = listRequests + spent;
   return {
     results,
+    ...(youtubeProblem ? { youtubeProblem: publicProblem(youtubeProblem) } : {}),
     searchesSpent: spent,
     searchCallsSpent: spent,
     quotaUnitsApprox: totalRequestUnitsApprox,

@@ -788,9 +788,11 @@ export async function addWatch(input = {}, deps = {}) {
       state.candidates[candidate.id] = candidate;
     }
   });
+  const warning = [resolved.warning, discovery.warning].filter(Boolean).join(' ') || null;
   return {
     watch: publicWatch(savedWatch),
     existing: racedExisting,
+    ...(warning ? { warning } : {}),
     initialCandidateCount: racedExisting ? 0 : initial.length,
     initialCandidateIds: Object.values((await read(account, deps)).candidates)
       .filter((candidate) => candidate.watchId === savedWatch.id)
