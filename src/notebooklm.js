@@ -2,7 +2,9 @@
  * DOM layer for Gemini Notebook (formerly NotebookLM).
  *
  * Every selector here was verified live against notebooklm.google.com
- * on 2026-07-29 (chat completion signal added 2026-08-05). When Google
+ * on 2026-07-29 (chat completion signal added 2026-08-05). The add-source
+ * modal and the overlay that now blocks the notebook header were verified
+ * on 2026-09-18 (Turkish UI). When Google
  * ships a UI change this is the only file that should need edits — keep
  * DOM knowledge out of the tool layer.
  */
@@ -30,7 +32,64 @@ export const SEL = {
 
   // Overflow menu entries
   menuItem: '[role="menuitem"], .mat-mdc-menu-item',
+
+  // Material overlay layer (modals, menus). While a backdrop is attached it
+  // swallows every click on the page underneath.
+  overlayBackdrop: '.cdk-overlay-backdrop',
+  overlayContainer: '.cdk-overlay-container',
+
+  addSourceButton: '[aria-label="Kaynak ekle"], [aria-label="Add source"]',
+  sourceUrlField: 'input[type="url"], input[type="text"], textarea',
+  titleInput: 'input.title-input',
 };
+
+/** Thrown when the saved profile is signed out; the message says what to do. */
+export class NotSignedInError extends Error {
+  constructor() {
+    super('Not signed in to Google in this profile. Run nlm_auth and sign in in the window it opens.');
+    this.name = 'NotSignedInError';
+  }
+}
+
+const SIGN_IN_URL = /accounts\.google\.com|ServiceLogin|signin/i;
+
+function assertSignedIn(page) {
+  if (SIGN_IN_URL.test(page.url())) throw new NotSignedInError();
+}
+
+/**
+ * Navigate, unless the page is sitting on a Google sign-in screen: that is
+ * the nlm_auth window, and someone may be typing a password into it right
+ * now. Moving it away would throw their sign-in away.
+ */
+async function gotoSignedIn(page, url) {
+  assertSignedIn(page);
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  assertSignedIn(page);
+}
+
+/**
+ * Close any open modal or menu. A brand-new notebook opens the add-source
+ * modal on its own, and its backdrop intercepts clicks on the title field
+ * (this is what broke createNotebook and renameNotebook in September 2026).
+ */
+export async function closeOverlays(page) {
+  for (let i = 0; i < 3; i++) {
+    const backdrop = page.locator(SEL.overlayBackdrop);
+    if (!(await backdrop.count().catch(() => 0))) return;
+    await page.keyboard.press('Escape');
+    await backdrop.first().waitFor({ state: 'detached', timeout: 2500 }).catch(() => {});
+  }
+}
+
+async function waitUntil(check, { timeoutMs, intervalMs = 1000 }) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await check()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 /** Icon ligature -> our source type. */
 const ICON_TYPE = {
@@ -54,7 +113,7 @@ export function notebookIdFromUrl(url) {
 }
 
 export async function gotoHome(page) {
-  await page.goto('https://notebooklm.google.com/', { waitUntil: 'domcontentloaded' });
+  await gotoSignedIn(page, 'https://notebooklm.google.com/');
   await dismissWelcome(page);
 }
 
@@ -64,17 +123,12 @@ export async function gotoHome(page) {
  * shell has loaded) so this doesn't time out on empty notebooks.
  */
 export async function gotoNotebook(page, notebookId) {
-  await page.goto(`https://notebooklm.google.com/notebook/${notebookId}`, {
-    waitUntil: 'domcontentloaded',
-  });
+  await gotoSignedIn(page, `https://notebooklm.google.com/notebook/${notebookId}`);
   await dismissWelcome(page);
   await page.waitForTimeout(1500); // Angular hydration of the source panel
   await Promise.race([
     page.waitForSelector(SEL.sourceItem, { timeout: 30000 }),
-    page
-      .locator('[aria-label="Kaynak ekle"], [aria-label="Add source"]')
-      .first()
-      .waitFor({ state: 'visible', timeout: 30000 }),
+    page.locator(SEL.addSourceButton).first().waitFor({ state: 'visible', timeout: 30000 }),
   ]);
 }
 
@@ -244,42 +298,101 @@ export async function removeSource(page, title, occurrence) {
 /**
  * Create a new (blank) notebook and optionally rename it.
  * The home page's "create-new-button" navigates straight to a fresh
- * notebook URL — no dialog. New notebooks default to an untitled name.
+ * notebook URL. Since September 2026 that notebook opens the add-source
+ * modal by itself; it is closed before renaming, otherwise its backdrop
+ * swallows the click on the title field.
  */
 export async function createNotebook(page, title) {
   await gotoHome(page);
-  await page.locator('.create-new-button').click();
-  await page.waitForURL(/\/notebook\/[0-9a-f-]{36}/, { timeout: 20000 });
+  await closeOverlays(page);
+  await page.locator('.create-new-button').first().click();
+  await page.waitForURL(/\/notebook\/[0-9a-f-]{36}/, { timeout: 30000 });
   const id = notebookIdFromUrl(page.url());
-  if (title) {
-    await renameNotebook(page, title);
-  }
-  return { id, url: page.url() };
+  await page
+    .locator(`${SEL.titleInput}, ${SEL.overlayBackdrop}`)
+    .first()
+    .waitFor({ state: 'attached', timeout: 15000 })
+    .catch(() => {});
+  await page.waitForTimeout(1500); // the modal animates in after the shell
+  if (!title) return { id, url: page.url() };
+  const renamed = await renameNotebook(page, title);
+  return { id, url: page.url(), title, renamed: renamed.renamed };
 }
 
-/** Rename the currently open notebook via its inline title input. */
+/**
+ * Rename the currently open notebook via its inline title input, then read
+ * the field back so a silent no-op is reported instead of claimed.
+ */
 export async function renameNotebook(page, title) {
-  const input = page.locator('input.title-input');
+  await closeOverlays(page);
+  const input = page.locator(SEL.titleInput).first();
   await input.click();
   await input.fill(title);
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(500);
-  return { title };
+  await page.waitForTimeout(800);
+  const current = await input.inputValue().catch(() => null);
+  return current === title
+    ? { title, renamed: true }
+    : { title, renamed: false, reason: 'the title field did not keep the new name' };
 }
 
-/** Add a URL as a new source. */
-export async function addSource(page, url) {
-  await page
-    .locator('[aria-label="Kaynak ekle"], [aria-label="Add source"]')
-    .first()
-    .click();
-  await page.waitForTimeout(1200);
+/**
+ * Add a URL (web page or YouTube video) as a new source.
+ *
+ * Flow verified live on 2026-09-18: open the add-source modal (a new
+ * notebook already has it open), pick the "Websites" option, type the URL
+ * into the modal's field, press Enter, then wait for the source list to
+ * grow. NotebookLM imports in the background, so success is confirmed by
+ * the source count rather than by the click.
+ */
+export async function addSource(page, url, { timeoutMs = 60000 } = {}) {
+  const before = (await listSources(page)).length;
 
-  const field = page.locator('input[type="url"], input[type="text"], textarea').last();
+  if (!(await page.locator(SEL.overlayBackdrop).count())) {
+    await page.locator(SEL.addSourceButton).first().click({ force: true });
+    await page
+      .locator(SEL.overlayBackdrop)
+      .first()
+      .waitFor({ state: 'attached', timeout: 10000 })
+      .catch(() => {});
+    await page.waitForTimeout(1500);
+  }
+
+  const websites = page.getByText(/^\s*(Web siteleri|Web sitesi|Websites?)\s*$/i).first();
+  if (await websites.count()) {
+    await websites.click({ force: true });
+    await page.waitForTimeout(1500);
+  }
+
+  // Prefer the field inside the modal. Falling back to the whole page could
+  // type the URL into the chat box instead, so only do it when no modal is up.
+  const modal = page.locator(SEL.overlayContainer);
+  const inModal = modal.locator(SEL.sourceUrlField);
+  const field = (await inModal.count()) ? inModal.last() : page.locator(SEL.sourceUrlField).last();
   await field.fill(url);
+  await page.waitForTimeout(800);
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(4000);
-  return { added: true, url };
+
+  let after = before;
+  const grew = await waitUntil(
+    async () => {
+      after = (await listSources(page).catch(() => [])).length;
+      return after > before;
+    },
+    { timeoutMs, intervalMs: 1500 },
+  );
+  await closeOverlays(page);
+
+  return grew
+    ? { added: true, url, before, after }
+    : {
+        added: false,
+        url,
+        before,
+        after,
+        reason:
+          'the source list did not grow in time; NotebookLM may have rejected the URL (private, very new or uncaptioned video) or still be importing it',
+      };
 }
 
 /**
@@ -318,7 +431,19 @@ async function askOnce(page, question, opts) {
   }
   lastAskSubmittedAt = Date.now();
 
+  await closeOverlays(page);
   const box = page.locator('textarea, [contenteditable="true"]').last();
+  // The query box stays disabled while a notebook is still loading or a
+  // previous answer is streaming; typing into it then silently does nothing.
+  await page
+    .waitForFunction(
+      () => {
+        const el = document.querySelector('textarea[aria-label="Sorgu kutusu"], textarea[aria-label="Query box"], [contenteditable="true"]');
+        return el && !el.disabled;
+      },
+      { timeout: 30000 },
+    )
+    .catch(() => {});
   await box.click();
   await box.fill(question);
   await page.keyboard.press('Enter');

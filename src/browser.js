@@ -45,11 +45,19 @@ const CHROME_PATHS = {
   darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
 };
 
+/**
+ * true / false on Windows and macOS; null on platforms we don't list
+ * (e.g. Linux), where Playwright's own launch error is left to surface.
+ */
+export function chromeInstalled() {
+  const candidates = CHROME_PATHS[process.platform];
+  if (!candidates) return null;
+  return candidates.some((p) => p && fs.existsSync(p));
+}
+
 /** Best-effort check so a missing Chrome install fails with a clear message. */
 function assertChromeInstalled() {
-  const candidates = CHROME_PATHS[process.platform];
-  if (!candidates) return; // unlisted platform (e.g. Linux) — let Playwright's own error surface
-  if (candidates.some((p) => p && fs.existsSync(p))) return;
+  if (chromeInstalled() !== false) return;
   throw new Error(
     'Google Chrome was not found. This tool automates your real Chrome install ' +
       '(not a downloaded Chromium) so it stays undetected by NotebookLM — install ' +
@@ -87,8 +95,24 @@ export function profileDir(account = 'default') {
  */
 export async function getContext({ headless = true, account = 'default' } = {}) {
   const existing = _contexts.get(account);
-  if (existing?.pending) return existing.pending;
-  if (existing?.ctx && !existing.ctx.__closed) return existing.ctx;
+  if (existing?.pending) {
+    const ctx = await existing.pending;
+    // A caller that needs a visible window (sign-in) must not be handed a
+    // background browser that another call launched first. That is how
+    // "the window opened" could be reported while nothing appeared.
+    if (!headless && ctx.__headless) {
+      await closeAccount(account);
+      return getContext({ headless, account });
+    }
+    return ctx;
+  }
+  if (existing?.ctx && !existing.ctx.__closed) {
+    if (!headless && existing.ctx.__headless) {
+      await closeAccount(account);
+    } else {
+      return existing.ctx;
+    }
+  }
 
   // Two overlapping tool calls at cold start must not both launch a Chrome
   // process against the same profile dir — stash the in-flight promise so a
@@ -105,9 +129,11 @@ export async function getContext({ headless = true, account = 'default' } = {}) 
         args: ['--disable-blink-features=AutomationControlled'],
       });
       ctx.__closed = false;
+      ctx.__headless = headless;
       ctx.on('close', () => {
         ctx.__closed = true;
-        _contexts.delete(account);
+        // Only forget this context; a relaunch may already own the slot.
+        if (_contexts.get(account)?.ctx === ctx) _contexts.delete(account);
       });
       _contexts.set(account, { ctx });
       return ctx;
@@ -131,6 +157,14 @@ export async function getPage(opts) {
   return pages.length ? pages[0] : ctx.newPage();
 }
 
+/** Close one account's browser; the next call relaunches it headless. */
+export async function closeAccount(account = 'default') {
+  const entry = _contexts.get(account);
+  _contexts.delete(account);
+  const ctx = entry?.ctx || (await entry?.pending?.catch(() => null));
+  if (ctx && !ctx.__closed) await ctx.close().catch(() => {});
+}
+
 export async function closeBrowser() {
   for (const { ctx } of _contexts.values()) {
     if (ctx && !ctx.__closed) await ctx.close().catch(() => {});
@@ -138,10 +172,27 @@ export async function closeBrowser() {
   _contexts.clear();
 }
 
-/** True when the persistent profile still holds a valid Google session. */
-export async function isAuthenticated(page) {
+const SIGN_IN_URL = /accounts\.google\.com|ServiceLogin|signin/i;
+const NOTEBOOKLM_URL = /^https:\/\/notebooklm\.google\.com\//i;
+
+/** True when the page is on a Google sign-in screen. */
+export function onSignInPage(page) {
+  return SIGN_IN_URL.test(page.url());
+}
+
+/**
+ * True when the persistent profile still holds a valid Google session.
+ *
+ * With `passive: true` the page is never reloaded while it is already on a
+ * Google sign-in screen or on NotebookLM itself: reloading under someone who
+ * is halfway through typing a password throws their sign-in away.
+ */
+export async function isAuthenticated(page, { passive = false } = {}) {
+  if (passive) {
+    if (onSignInPage(page)) return false;
+    if (NOTEBOOKLM_URL.test(page.url())) return true;
+  }
   await page.goto('https://notebooklm.google.com/', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2500);
-  const url = page.url();
-  return !/accounts\.google\.com|ServiceLogin|signin/i.test(url);
+  return !onSignInPage(page);
 }

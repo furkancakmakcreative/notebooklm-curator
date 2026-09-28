@@ -131,11 +131,10 @@ async function defaultNotebookApi() {
         async addSource({ account, notebookId, url }) {
           const page = await browser.getPage({ account });
           await notebooklm.gotoNotebook(page, notebookId);
-          const before = (await notebooklm.listSources(page)).length;
-          await notebooklm.addSource(page, url);
-          const after = (await notebooklm.listSources(page)).length;
+          const { added, before, after, reason } = await notebooklm.addSource(page, url);
+          if (!added) throw new Error(reason || 'NotebookLM did not confirm the new source');
           if (after !== before + 1) {
-            throw new Error(`NotebookLM source count did not increase (${before} to ${after})`);
+            throw new Error(`NotebookLM source count did not increase by one (${before} to ${after})`);
           }
           return { added: true, before, after };
         },
