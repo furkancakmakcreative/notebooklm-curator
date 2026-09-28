@@ -1,66 +1,144 @@
-# notebooklm-curator
+<picture>
+  <source media="(prefers-color-scheme: dark) and (max-width: 600px)" srcset="./docs/hero-mobile-dark.svg">
+  <source media="(prefers-color-scheme: light) and (max-width: 600px)" srcset="./docs/hero-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/hero-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="./docs/hero-light.svg">
+  <img alt="notebooklm-curator: new videos from followed channels flow into a NotebookLM library, a scan marks each source fresh, aging or stale, and stale ones leave only after approval." src="./docs/hero-light.svg" width="100%">
+</picture>
 
-An MCP server that **watches, audits and safely prunes** Gemini Notebook (formerly NotebookLM) libraries.
+**Keeps your NotebookLM library fresh.** Ask Claude to follow a YouTube channel and new
+videos land in your notebook. Ask it to audit a notebook and every source is checked
+against a shelf life that fits its topic. Nothing is deleted without your approval.
 
-> **Not an official Google or Anthropic integration.** This drives NotebookLM
-> through your own signed-in Chrome profile — it is not affiliated with,
-> endorsed by, or connected to Google in any way. Consider using a separate
-> Google account rather than your primary one; the `account` parameter
-> supports multiple profiles. See [Known limitations](#known-limitations) for
-> the full picture before pointing it at anything you care about.
+Works in **Claude Desktop** and **Claude Code** on Windows and macOS.
+**[Türkçe kurulum rehberi](README.tr.md)**
 
-The curator adds source lifecycle tools on top of the usual add-and-ask workflow:
+> NotebookLM was renamed Gemini Notebook in July 2026. Same product, same notebooks;
+> this tool works with it under either name.
 
-| Tool | What it does | In other NotebookLM MCPs |
+## Install
+
+You need **Google Chrome** (the normal desktop browser) and a Google account that uses NotebookLM.
+
+### Claude Desktop: one click, no terminal
+
+1. Download **[notebooklm-curator.mcpb](https://github.com/furkancakmakcreative/notebooklm-curator/releases/latest/download/notebooklm-curator.mcpb)**.
+2. Double-click the file. Claude Desktop opens an install window; click **Install**.
+   If nothing opens, go to **Settings → Extensions** in Claude Desktop and drag the file onto that page.
+3. Leave the YouTube API key field empty. It is optional.
+
+### Claude Code: one command
+
+Needs [Node.js](https://nodejs.org) 20 or newer. Paste into a terminal:
+
+```bash
+claude mcp add --scope user notebooklm-curator -- npx -y github:furkancakmakcreative/notebooklm-curator
+```
+
+### Then, in either app
+
+Start a new chat and say:
+
+> **Set up NotebookLM Curator.**
+
+Claude checks what is ready and walks you through the rest. The only step that needs you:
+a Chrome window opens once, you sign in to Google there, and tell Claude you are done.
+After that everything runs in the background.
+
+## What to ask
+
+| You say | What happens |
+|---|---|
+| "List my notebooks." | Every notebook with its source count. |
+| "Audit my *AI Research* notebook. Anything stale?" | Each source gets a category and a shelf life; stale, aging and duplicate sources are listed. Nothing is deleted. |
+| "Remove the stale ones you listed." | Claude confirms each title with you, then removes only those. |
+| "Follow @GoogleDevelopers for my *AI Research* notebook." | New uploads are collected for your review. Existing videos are not imported. |
+| "Any new videos from the channels I follow?" | Checks every followed channel and playlist and lists what is new. |
+| "Add the new ones." | Adds the videos you approved, within your notebook's source limit. |
+| "Ask my notebook: what are the main arguments?" | Returns NotebookLM's answer. |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/demo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="./docs/demo-light.svg">
+  <img alt="An audit of a 56-source notebook: 3 fresh, 3 aging, 5 stale, 45 unknown, 0 pinned, and one duplicate title. Five stale videos are listed with how far past their shelf life they are." src="./docs/demo.png" width="100%">
+</picture>
+
+*Titles are representative examples. The counts come from a real run against a 56-source notebook;
+`unknown` means the source's date was not looked up or could not be found.*
+
+## YouTube API key (optional)
+
+Following channels and playlists works **without** a key: the tool reads YouTube's public feed,
+which shows each channel's newest 15 videos. That is plenty when it checks every day or two.
+
+A key adds two things: **publish dates in audits** (NotebookLM does not show a video's link, so the
+date has to be looked up by title) and **full history** for channels and playlists.
+It is free and takes about five minutes:
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and create a project if asked.
+2. **APIs & Services → Library**, search **YouTube Data API v3**, click **Enable**.
+3. **APIs & Services → Credentials → Create credentials → API key**.
+4. Click the new key, under **API restrictions** choose **Restrict key**, tick only
+   **YouTube Data API v3**, and save. A restricted key can only read public YouTube data.
+5. Claude Desktop: open the extension's settings under **Settings → Extensions** and paste the key.
+   Claude Code: `claude mcp remove notebooklm-curator`, then run the install command again with
+   `-e YOUTUBE_API_KEY=your_key` added right after `--scope user`.
+
+The key stays on your computer and is only sent to `googleapis.com`.
+
+## How it decides what is stale
+
+A single "older than 40 days" rule is wrong both ways: a model announcement is outdated in three
+weeks, a video on typography is still useful in three years. So the shelf life depends on the category:
+
+| Category | Days | What lands here |
 |---|---|---|
-| `nlm_list_sources` | Lists the sources in a notebook | ✗ missing |
-| `nlm_remove_source` | Deletes a source | ✗ missing |
-| `nlm_audit` | Flags stale sources by shelf life | ✗ missing |
-| `nlm_watch_source` | Watches a YouTube channel or playlist | ✗ missing |
-| `nlm_sync_watches` | Finds and optionally adds new videos | ✗ missing |
+| `news` | 30 | announcements, release notes, weekly roundups |
+| `tactics` | 45 | rate limits, "which model to use" advice tied to a moving target |
+| `tool` | 60 | tool usage, workflows tied to a specific release |
+| `tutorial` | 120 | courses, walkthroughs, technical deep dives |
+| `official` | 150 | product feature videos from the Anthropic and Claude channels |
+| `principle` | 1095 | theory, strategy, timeless craft |
 
-Also included: `nlm_auth`, `nlm_list_notebooks`, `nlm_create_notebook`,
-`nlm_rename_notebook`, `nlm_add_source`, `nlm_ask`, `nlm_manage_watches`,
-`nlm_list_candidates`, and `nlm_approve_candidates`.
+The category is guessed from the title (English and Turkish keywords). Any number can be changed,
+for example: "audit it, but treat news as stale after 14 days".
+A source is `aging` once 75% of its shelf life is used, `stale` after that, and `unknown` when its
+date can't be found. A date is never guessed.
 
-![nlm_audit output inside Claude Desktop](docs/demo.png)
+## Safety
 
-*(Titles above are representative examples; the counts reflect a real run against a 56-source notebook.)*
+- **Nothing is deleted without approval.** `nlm_remove_source` refuses to run unless the call carries
+  `confirm: true`, and Claude is told to ask you about each exact title. The audit is read-only.
+- **Following a channel never imports its archive** unless you ask for a number of recent videos
+  (at most 50). New videos wait for your review by default. A fully automatic mode exists; turning
+  it on needs an explicit confirmation.
+- **It runs on your computer**, in a separate Chrome profile that only this tool uses. Your password is
+  never stored, only that profile's Google session. Consider signing in with a Google account you keep
+  for research rather than your main one.
+- **Not affiliated with Google or Anthropic.** There is no public NotebookLM API for this, so the tool
+  uses the NotebookLM website the way a person would. When Google changes that website, some actions
+  can stop working until an update ships.
 
----
+## Known limitations
 
-## Why browser automation
+- **Windows and macOS only.** Linux is not a target.
+- **Source links are not readable.** NotebookLM never shows a source's URL on the page, so titles are
+  the identifier. Two sources with the same title are reported as duplicates, and deleting one of them
+  needs you to say which.
+- **Dates only for YouTube.** Web pages and PDFs always show as `unknown` in audits.
+- **Very new or uncaptioned videos may not import.** Automatic mode waits 72 hours by default.
+- **Button text matching covers English and Turkish.** A NotebookLM interface in another language may
+  fail to find some buttons.
+- **The computer has to be on.** Followed channels are checked when the tool starts and whenever you
+  ask. Missed checks catch up on the next start; nothing is lost, it arrives later. A scheduled task can
+  run checks for you (see *Scheduling* under For developers).
 
-NotebookLM has **no public API** on the consumer side. Source lists, publish dates,
-and deletion are not reachable over HTTP. The Gemini Notebook Enterprise API on
-Google Cloud is a separate product that needs an enterprise account.
+## For developers
 
-So the only way in is a persistent Chrome profile. Every selector lives in one
-file, `src/notebooklm.js` — when Google ships a UI change, that's the only file
-that needs an update.
+<details>
+<summary>Manual install, configuration, tools, scheduling, releasing</summary>
 
-Selectors were verified live against notebooklm.google.com on 2026-07-29.
-
----
-
-## Requirements
-
-- **Node.js 20+**
-- **Google Chrome installed** (Windows or macOS — the standard desktop app
-  from [google.com/chrome](https://www.google.com/chrome/)). This tool
-  automates your real Chrome install on purpose, not a downloaded Chromium
-  build: patchright's anti-detection patches are far more effective against
-  NotebookLM's bot checks when running inside an actual Chrome, so we don't
-  trade that away for a "works anywhere" default. If Chrome isn't found,
-  `nlm_auth`/any tool call fails immediately with a clear message instead of
-  a cryptic browser-launch error. Because real Chrome is used by default,
-  `npm install` does **not** download a separate Chromium build — nothing
-  extra to fetch, nothing extra on disk. (If you deliberately opt into
-  `NLM_BROWSER_CHANNEL=chromium`, run `npx patchright install chromium`
-  once yourself first.)
-- Tested on Windows and macOS. Linux is not a current target.
-
-## Setup
+### Manual install
 
 ```bash
 git clone https://github.com/furkancakmakcreative/notebooklm-curator.git
@@ -68,19 +146,7 @@ cd notebooklm-curator
 npm install
 ```
 
-Copy `.env.example` to `.env` for YouTube date resolution and watched sources:
-
-```
-YOUTUBE_API_KEY=your_own_key
-```
-
-> The key stays on your machine. The server only sends it to `googleapis.com`
-> and never logs or forwards it elsewhere.
-
-### Connecting to Claude Desktop / Claude Code
-
-`%APPDATA%\Claude\claude_desktop_config.json` (Windows) or the equivalent
-config on macOS/Linux:
+Claude Desktop without the extension, in `claude_desktop_config.json`:
 
 ```json
 {
@@ -88,238 +154,72 @@ config on macOS/Linux:
     "notebooklm-curator": {
       "command": "node",
       "args": ["/full/path/to/notebooklm-curator/src/index.js"],
-      "env": { "YOUTUBE_API_KEY": "your_own_key" }
+      "env": { "YOUTUBE_API_KEY": "" }
     }
   }
 }
 ```
 
-Fully restart your MCP client. On first use, call `nlm_auth`: a visible Chrome
-window opens, you sign in with your Google account once, and the session is
-saved to a persistent local profile. Every run after that is headless.
+Environment variables (all optional, see `.env.example`): `YOUTUBE_API_KEY`, `NLM_DATA_DIR`
+(browser profile and watch state), `NLM_BROWSER_CHANNEL` (`chrome` or `chromium`),
+`NLM_MIN_ASK_INTERVAL_MS` (default 4000), `NLM_STARTUP_ACCOUNT`, `NLM_STARTUP_DELAY_MS`.
 
----
+### Tools
 
-## Getting a YouTube API key
+| Tool | What it does |
+|---|---|
+| `nlm_setup` | Readiness check with plain-language next steps. Opens no window. |
+| `nlm_auth` | Opens Chrome for a one-time Google sign-in; the next call confirms it and closes the window. |
+| `nlm_list_notebooks`, `nlm_list_sources` | Read notebooks and sources. |
+| `nlm_audit` | Shelf-life audit and duplicates, read-only. Options: `includeFresh`, `categories`, `knownIds`, `searchBudget`. |
+| `nlm_remove_source` | Delete by exact title. Requires `confirm: true`; `occurrence` picks one of several same-title sources. |
+| `nlm_create_notebook`, `nlm_rename_notebook` | Create and rename. Renames are read back and verified. |
+| `nlm_add_source` | Add a URL. Success is confirmed by the source list growing. |
+| `nlm_ask` | Ask a question. `incomplete: true` when the answer may be partial. |
+| `nlm_watch_source`, `nlm_manage_watches` | Follow a channel or playlist; list, pause, resume, update, remove. |
+| `nlm_sync_watches`, `nlm_list_candidates`, `nlm_approve_candidates` | Discover, review and add new videos. |
 
-Google Cloud Console → **APIs & Services**
+Watch modes: `report` (lists only), `review` (default, waits for `nlm_approve_candidates`), `auto`
+(adds after `minAutoAddAgeHours`, needs `confirmAuto: true`). Set `sourceLimit` to your plan's limit
+(at the time of writing 50 Standard, 100 Plus, 300 Pro, 500 or 600 Ultra, see
+[NotebookLM Help](https://support.google.com/notebooklm/answer/16213268)); `reserveSlots` keeps room
+for manual sources. A crash during an add leaves an `uncertain` candidate that is never retried on its
+own; resolve it with `uncertainAction: "mark-added"` or `"retry-add"`.
 
-1. **Library** → search "YouTube Data API v3" → **Enable**
-2. **Credentials** → **Create credentials** → **API key**
-3. Click the key → **API restrictions** → *Restrict key* → select only
-   **YouTube Data API v3** → Save
-
-Don't skip step 3. If a restricted key ever leaks, it can only read public
-YouTube data — it can't touch your account or spend money.
-
-### Quota
-
-The current YouTube Data API model counts these list requests at one unit each:
-
-- `videos.list`, `channels.list`, `playlists.list` and `playlistItems.list` → **1 unit** per call
-- `search.list` → **1 unit** per call and a separate default allowance of 100 search calls per day
-
-NotebookLM never exposes a source's URL, so an audit may need title searches.
-Save the returned `videoId` values and pass them back to `nlm_audit` as
-`knownIds`; later audits use batched `videos.list` calls. Channel and playlist
-watches avoid title search entirely and use canonical IDs.
-
-The `searchBudget` parameter caps search calls (default 60).
-
-YouTube changed this accounting in June 2026. See the current
-[quota table](https://developers.google.com/youtube/v3/determine_quota_cost) and
-[`search.list` reference](https://developers.google.com/youtube/v3/docs/search/list).
-
----
-
-## Watched YouTube sources
-
-`nlm_watch_source` accepts a channel ID, `@handle`, channel URL, playlist ID,
-or playlist URL. A new watch baselines the newest current video and does not
-pull the existing archive unless `initialItems` is explicitly set (maximum 50).
-
-```json
-{
-  "source": "@GoogleDevelopers",
-  "notebookId": "...",
-  "mode": "review",
-  "intervalHours": 48,
-  "sourceLimit": 50,
-  "reserveSlots": 5
-}
-```
-
-Modes:
-
-- `report`: records and reports new candidates.
-- `review`: queues candidates for `nlm_approve_candidates` (default).
-- `auto`: adds eligible videos automatically after `minAutoAddAgeHours`
-  (default 72 hours), while enforcing the configured source budget. Creating
-  or updating a watch to this persistent mode requires `confirmAuto: true`.
-
-Every video is tracked by its canonical YouTube ID. Repeated runs are
-idempotent, and watches targeting the same notebook serialize additions so
-they cannot race past the source limit. A process crash during an add produces
-an `uncertain` candidate; it is never retried or marked as added automatically.
-After checking the notebook, explicitly approve it with `uncertainAction` set
-to `mark-added` if the source is already present, or `retry-add` if it is absent.
-
-NotebookLM limits vary by plan. At the time of writing they are 50 sources for
-Standard, 100 for Plus, 300 for Pro, and 500 or 600 for Ultra. Set
-`sourceLimit` to the target account's real limit. `reserveSlots` keeps room for
-manual sources. Current limits are listed in
-[NotebookLM Help](https://support.google.com/notebooklm/answer/16213268).
-
-### Automatic catch-up and scheduling
-
-When the MCP server starts, it performs a non-blocking catch-up for watches
-whose last successful sync is older than their `intervalHours`. If the computer
-was off at the scheduled time, the next launch finds everything since the last
-stored video instead of losing the missed run.
-
-For Windows Task Scheduler or cron, use the separate one-shot command:
+### Scheduling
 
 ```bash
 npm run sync -- --account default
 ```
 
-Useful options are `--watch-id`, `--force`, and `--max-pages`. The command
-prints compact JSON and exits after one run. Configure desktop schedulers to
-run missed tasks as soon as the computer becomes available. A powered-off
-computer cannot run locally; a future hosted worker would be required for
-true off-device execution.
+One run for Windows Task Scheduler or cron (`--watch-id`, `--force`, `--max-pages`). It prints compact
+JSON and exits. Configure the scheduler to run missed tasks as soon as the computer is available.
 
----
+### YouTube quota
 
-## Shelf-life policy
+With a key, `videos.list`, `channels.list`, `playlists.list` and `playlistItems.list` cost one unit per
+call; `search.list` has its own default allowance of 100 calls a day. An audit searches each title once;
+pass the returned `videoId`s back as `knownIds` and later audits cost almost nothing. `searchBudget`
+caps searches per audit (default 60). See the
+[quota table](https://developers.google.com/youtube/v3/determine_quota_cost).
 
-A single global "40 days" threshold gets the wrong answer both ways: a model
-announcement is dead in three weeks; a typography video is still useful in
-three years. Shelf life is therefore a function of category:
+### Releasing
 
-| Category | Days | What lands here |
-|---|---|---|
-| `news` | 30 | announcements, release notes, weekly roundups |
-| `tactics` | 45 | rate limits, model ranking/picking advice tied to a moving target |
-| `tool` | 60 | tool usage, workflow tied to a specific release |
-| `official` | 150 | Anthropic/Claude official product-feature videos |
-| `tutorial` | 120 | courses, walkthroughs, technical deep-dives |
-| `principle` | 1095 | theory, strategy, timeless craft |
+Bump `version` in both `package.json` and `manifest.json`, add a `CHANGELOG.md` entry, then push a
+`vX.Y.Z` tag. The release workflow runs the tests, builds `notebooklm-curator.mcpb` and attaches it to a
+GitHub Release. `npm run pack:mcpb` builds the same file locally.
 
-`nlm_audit` guesses a category from the title heuristically; override any
-threshold with the `categories` parameter:
+How the browser side works, and why: [docs/under-the-hood.md](docs/under-the-hood.md).
 
-```json
-{ "notebookId": "...", "categories": { "news": 14, "tool": 45 } }
-```
-
-Status values: `fresh` → `aging` (75% of shelf life burned) → `stale`.
-Sources whose date can't be resolved are `unknown` — a date is never guessed.
-
-By default the response only gives you counts for `fresh`/`pinned` sources,
-not their full per-item detail — you rarely need to see the sources that
-need no action. Pass `includeFresh: true` to get everything, e.g. for a
-full-library export.
-
----
-
-## Delete safety
-
-`nlm_remove_source` is irreversible and refuses to run without `confirm: true`.
-`nlm_audit` never deletes anything — it only produces a report.
-
-Intended flow: `nlm_audit` → show the list to the user → call
-`nlm_remove_source` one title at a time for what they approve. The model
-bulk-deleting on its own is blocked by design.
-
----
-
-## How `nlm_ask` actually detects "the answer is done"
-
-This turned out to be the hardest part of the tool, worth documenting because
-the wrong approach *looks* like it works until it silently doesn't.
-
-The first instinct is to poll `document.querySelector('main').innerText` until
-it stops changing. That's wrong: NotebookLM's chat panel renders **outside**
-`<main>` entirely. The text there never changes, so the polling loop reports
-"stable" almost instantly and returns whatever happens to be sitting in
-`<main>` at that moment — in one observed case, hidden emoji-picker markup
-that had nothing to do with the question asked.
-
-The actual reliable signal is a `.thinking-message` element (it carries an
-`is-changing` class while streaming) detaching from the DOM once the model
-finishes. Even then, the query textarea's `disabled` attribute clears
-slightly *after* that detachment — firing the next question too early hits a
-still-disabled box and hangs. `ask()` in `src/notebooklm.js` waits for both,
-in order, before reading the last `.chat-message-pair`'s answer text.
-
-If you're extending this tool and NotebookLM's DOM changes again, that's the
-one thing worth re-verifying live before touching anything else. If a wait
-times out, `nlm_ask` sets `incomplete: true` on its response rather than
-silently returning stale or partial text as if it were final.
-
-`nlm_ask` also enforces a minimum gap (default 4s, `NLM_MIN_ASK_INTERVAL_MS`)
-between question submissions. Firing questions back-to-back is a pattern real
-usage never produces, and it's the most plausible trigger for NotebookLM
-occasionally refusing to answer ("Şu anda yanıt vermekte zorlanıyorum") —
-this is cheap insurance against that, not a confirmed root cause.
-
----
-
-## Known limitations
-
-- **Source URLs are not readable.** NotebookLM never puts them in the DOM —
-  no href, no data attribute, clicking a row doesn't reveal one either. Titles
-  are used as the identifier instead, so two sources with an identical title
-  can't be told apart (`findDuplicates` reports these separately).
-- **The delete confirmation dialog** may or may not appear depending on
-  rollout; the code handles both and verifies the source count afterward.
-  `removeSource` re-checks the target row's title immediately before acting
-  on it, but a full guarantee against the list reordering mid-click isn't
-  possible with index-based targeting alone.
-- **UI text matching is English/Turkish only.** Menu items, buttons, and the
-  category-guessing heuristics in `policy.js` match against those two
-  languages; a notebook in a third UI language may fail to categorize or to
-  find the "remove" menu item.
-- **Freshness dates only resolve for YouTube sources today.** Web pages and
-  PDFs always come back `unknown` — there's no per-page date extraction yet.
-- Fixed `waitForTimeout` calls are used in a few places instead of polling
-  for a DOM signal; on a slow connection they can under-wait, on a fast one
-  they add latency. `ask()` uses the more robust polling pattern — anything
-  ported from `removeSource`/`addSource` should follow that model instead.
-- If Google changes the UI, `src/notebooklm.js` is the only file that needs
-  updating.
-- `renameNotebook` and `addSource` report success once the DOM action is
-  triggered, without re-reading the page to confirm it actually applied
-  (unlike `removeSource`, which re-verifies). On a slow/flaky page a rename
-  or add could silently no-op.
-- The Chrome profile directory is created with `mode: 0o700`, which is a
-  no-op on Windows NTFS (no ACL is set) — on Windows the directory's
-  permissions are whatever the OS default is for your user folder, not
-  actually restricted to your account alone.
-- **Watched YouTube sources need an API key.** Automatic NotebookLM adds also
-  need the saved Chrome session to remain authenticated.
-- **Very new or uncaptioned videos may not import.** Automatic mode waits 72
-  hours by default because NotebookLM may reject recently uploaded videos.
-- **Playlist scans are bounded.** Playlists can be reordered, so they are
-  rescanned and deduplicated instead of trusting a cursor. If `maxPages` is too
-  low, the sync reports truncation and does not mark the watch successful.
-- **Crash recovery needs an explicit decision.** NotebookLM does not expose
-  source URLs in the DOM, so a visible title cannot prove identity. An
-  `uncertain` candidate therefore stays blocked until the user explicitly
-  chooses `mark-added` or `retry-add`.
+</details>
 
 ## Roadmap
 
-Ideas intentionally left out of the focused v0.2 release:
+- Checks that run while your computer is off.
+- RSS and sitemap watches for blogs and documentation sites.
+- Dates for web and PDF sources.
 
-- Hosted discovery that works while the user's computer is powered off.
-- YouTube push notifications instead of periodic polling.
-- RSS and sitemap watch adapters.
-- Optional Apify discovery for sites without a stable API or feed.
-- Notifications and cross-notebook source search.
-
-Contributions on any of these are welcome.
+Ideas and bug reports are welcome in [Issues](https://github.com/furkancakmakcreative/notebooklm-curator/issues).
 
 ## License
 
